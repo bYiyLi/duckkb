@@ -189,8 +189,11 @@ async def init_schema():
         # Install and load vss extension for vector search
         try:
             await asyncio.to_thread(conn.execute, "INSTALL vss; LOAD vss;")
+            await asyncio.to_thread(conn.execute, "SET hnsw_enable_experimental_persistence=true;")
         except Exception as e:
-            logger.warning(f"Failed to load vss extension: {e}. Vector search might not work.")
+            logger.warning(
+                f"Failed to load vss extension or set experimental persistence: {e}. Vector search might not work."
+            )
 
         # Check if embedding column exists and add if missing (migration)
         try:

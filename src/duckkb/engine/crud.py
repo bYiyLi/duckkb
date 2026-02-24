@@ -65,7 +65,7 @@ async def add_documents(table_name: str, records: list[dict]) -> dict:
         return {"status": "success", "count": len(valid_records)}
 
     texts = [req[2] for req in embedding_requests]
-    
+
     # 4. 获取 Embedding
     try:
         embeddings = await get_embeddings(texts)
@@ -89,16 +89,18 @@ async def add_documents(table_name: str, records: list[dict]) -> dict:
         embedding_id = compute_text_hash(text)
         metadata_json = orjson.dumps(record).decode("utf-8")
 
-        rows.append((
-            ref_id,
-            table_name,
-            key,
-            segmented_texts[idx],
-            embedding_id,
-            embeddings[idx],
-            metadata_json,
-            1.0
-        ))
+        rows.append(
+            (
+                ref_id,
+                table_name,
+                key,
+                segmented_texts[idx],
+                embedding_id,
+                embeddings[idx],
+                metadata_json,
+                1.0,
+            )
+        )
 
     # 7. 写入数据库
     if rows:
@@ -111,14 +113,11 @@ async def add_documents(table_name: str, records: list[dict]) -> dict:
         "status": "success",
         "table_name": table_name,
         "upserted_count": len(valid_records),
-        "message": f"Successfully upserted {len(valid_records)} records"
+        "message": f"Successfully upserted {len(valid_records)} records",
     }
 
 
 def _insert_rows(rows: list[SearchRow]):
     """批量插入 DB 记录。"""
     with get_db(read_only=False) as conn:
-        conn.executemany(
-            f"INSERT INTO {SYS_SEARCH_TABLE} VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            rows
-        )
+        conn.executemany(f"INSERT INTO {SYS_SEARCH_TABLE} VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows)

@@ -19,15 +19,15 @@
   - [x] SubTask 4.2: 优化 `_process_file` 函数逻辑，拆分过长代码块。
   - [x] SubTask 4.3: 补充缺失的 docstrings。
 
-- [ ] Task 5: 重构其他模块的文件操作
-  - [ ] SubTask 5.1: 更新 `deleter.py` 使用 `file_ops` 模块，并消除与 `sync.py` 的重复逻辑。
-  - [ ] SubTask 5.2: 更新 `mcp/server.py` 中的 `check_health` 使用异步文件检查。
-  - [ ] SubTask 5.3: 更新 `config.py` 中的 `KBConfig.from_yaml` 使用异步读取（注意该方法可能是同步调用的入口，需仔细处理）。
-  - [ ] SubTask 5.4: 优化 `utils/text.py` 中的 `jieba` 词典加载逻辑，避免阻塞。
+- [x] Task 5: 重构其他模块的文件操作
+  - [x] SubTask 5.1: 更新 `deleter.py` 使用 `file_ops` 模块，并消除与 `sync.py` 的重复逻辑。
+  - [x] SubTask 5.2: 更新 `mcp/server.py` 中的 `check_health` 使用异步文件检查。
+  - [x] SubTask 5.3: 更新 `config.py` 中的 `KBConfig.from_yaml` 使用异步读取（注意该方法可能是同步调用的入口，需仔细处理）。
+  - [x] SubTask 5.4: 优化 `utils/text.py` 中的 `jieba` 词典加载逻辑，避免阻塞。
 
-- [ ] Task 6: 清理硬编码与文档完善
-  - [ ] SubTask 6.1: 扫描并提取 `src/duckkb/config.py` 和 `src/duckkb/ontology/_models.py` 中的硬编码值。
-  - [ ] SubTask 6.2: 检查并补充剩余公共方法的 docstrings。
+- [x] Task 6: 清理硬编码与文档完善
+  - [x] SubTask 6.1: 扫描并提取 `src/duckkb/config.py` 和 `src/duckkb/ontology/_models.py` 中的硬编码值。
+  - [x] SubTask 6.2: 检查并补充剩余公共方法的 docstrings。
 
 - [ ] Task 7: 最终验证
   - [ ] SubTask 7.1: 运行所有单元测试，确保重构未引入回归。

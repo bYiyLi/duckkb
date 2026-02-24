@@ -6,31 +6,77 @@ DuckKB MCP 服务模块
 
 提供的工具：
 - check_health: 健康检查，返回服务状态和知识库信息
-- sync_knowledge_base: 同步知识库，从 JSONL 文件导入到 DuckDB
+- sync_knowledge_base: 同步知识库，支持 ontology 配置变更和数据迁移
 - get_schema_info: 获取数据库模式定义和 ER 图信息
 - smart_search: 智能混合搜索（向量 + 元数据）
 - query_raw_sql: 执行只读 SQL 查询
 - validate_and_import: 验证并导入数据文件（upsert 语义）
 - delete_records: 删除指定表中的记录
+- list_backups: 列出所有可用备份
+- restore_backup: 从备份恢复知识库
 """
 
 import json
+from collections.abc import AsyncGenerator
 from pathlib import Path
 
 import orjson
 from fastmcp import FastMCP
+from fastmcp.server.lifespan import lifespan
 
 from duckkb.config import AppContext
 from duckkb.constants import BUILD_DIR_NAME, DATA_DIR_NAME, DB_FILE_NAME, MAX_ERROR_FEEDBACK
+from duckkb.engine.backup import BackupManager
 from duckkb.engine.crud import add_documents
 from duckkb.engine.deleter import delete_documents
+from duckkb.engine.migration import MigrationManager
 from duckkb.engine.searcher import query_raw_sql as _query
 from duckkb.engine.searcher import smart_search as _search
+from duckkb.engine.sync import persist_all_tables
 from duckkb.engine.sync import sync_knowledge_base as _sync
+from duckkb.logger import logger
 from duckkb.schema import get_schema_info as _get_schema_info
+from duckkb.schema import init_schema
 from duckkb.utils.file_ops import file_exists, glob_files, read_file, unlink
+from duckkb.utils.text import init_jieba_async
 
-mcp = FastMCP("DuckKB")
+
+@lifespan
+async def kb_lifespan(server: FastMCP) -> AsyncGenerator[dict[str, Path], None]:
+    """知识库生命周期管理。
+
+    在 MCP 服务启动时初始化知识库，关闭时持久化数据到磁盘。
+
+    Args:
+        server: FastMCP 服务器实例。
+
+    Yields:
+        包含知识库路径的上下文字典。
+    """
+    ctx = AppContext.get()
+
+    logger.info("Initializing knowledge base...")
+    try:
+        await init_schema()
+        await init_jieba_async()
+        await _sync(ctx.kb_path)
+        logger.info("Knowledge base initialized successfully.")
+    except Exception as e:
+        logger.error(f"Knowledge base initialization failed: {e}")
+        raise
+
+    yield {"kb_path": ctx.kb_path}
+
+    logger.info("Persisting knowledge base to disk...")
+    try:
+        results = await persist_all_tables(ctx.kb_path)
+        persisted = sum(1 for v in results.values() if v >= 0)
+        logger.info(f"Knowledge base persisted: {persisted} tables saved.")
+    except Exception as e:
+        logger.error(f"Failed to persist knowledge base: {e}")
+
+
+mcp = FastMCP("DuckKB", lifespan=kb_lifespan)
 
 
 @mcp.tool()
@@ -66,18 +112,69 @@ async def check_health() -> str:
 
 
 @mcp.tool()
-async def sync_knowledge_base() -> str:
+async def sync_knowledge_base(
+    ontology_yaml: str | None = None,
+    force: bool = False,
+) -> str:
     """
-    同步知识库。
+    同步知识库，支持 ontology 配置变更和数据迁移。
 
     从 JSONL 数据文件导入内容到 DuckDB 数据库，包括向量化处理。
-    此操作会更新数据库索引和向量存储。
+    如果提供 ontology_yaml 参数，将进行配置校验、数据库模式迁移和数据迁移。
+
+    Args:
+        ontology_yaml: 可选的新 ontology 配置（YAML 格式字符串）。
+                      如果提供，将进行：
+            - YAML 解析与配置校验
+            - 数据库模式迁移
+            - 数据迁移（如需要）
+            - 失败时自动回滚
+
+                      示例：
+                      ```yaml
+                      nodes:
+                        documents:
+                          table: documents
+                          identity: [id]
+                          schema:
+                            type: object
+                            properties:
+                              id:
+                                type: string
+                              title:
+                                type: string
+                              content:
+                                type: string
+                            required: [id]
+                          vectors:
+                            content:
+                              dim: 1536
+                              model: text-embedding-3-small
+                      ```
+        force: 是否强制重新同步所有数据（忽略增量检测）。
+               当 ontology 变更涉及删除表时，需要设置为 True 才能执行。
 
     Returns:
-        str: 操作结果消息，成功时返回 "Synchronization completed."
+        str: JSON 格式的操作结果，包含迁移统计和状态。
     """
-    await _sync(AppContext.get().kb_path)
-    return "Synchronization completed."
+    ctx = AppContext.get()
+
+    if ontology_yaml:
+        migration_manager = MigrationManager(ctx.kb_path)
+        result = migration_manager.migrate(ontology_yaml, force=force)
+        return json.dumps(result.to_dict(), ensure_ascii=False)
+
+    await _sync(ctx.kb_path)
+
+    results = await persist_all_tables(ctx.kb_path)
+    return json.dumps(
+        {
+            "status": "success",
+            "message": "Synchronization completed.",
+            "persisted_tables": results,
+        },
+        ensure_ascii=False,
+    )
 
 
 @mcp.tool()
@@ -195,13 +292,12 @@ async def validate_and_import(table_name: str, temp_file_path: str) -> str:
         raise ValueError(error_msg)
 
     result = await add_documents(table_name, records)
-    
-    # 删除临时文件
+
     try:
         await unlink(path)
     except Exception:
         pass
-        
+
     return json.dumps(result, ensure_ascii=False)
 
 
@@ -225,3 +321,85 @@ async def delete_records(table_name: str, record_ids: list[str]) -> str:
     """
     result = await delete_documents(table_name, record_ids)
     return json.dumps(result, ensure_ascii=False)
+
+
+@mcp.tool()
+async def list_backups() -> str:
+    """
+    列出所有可用备份。
+
+    返回知识库的所有备份列表，按创建时间倒序排列。
+
+    Returns:
+        str: JSON 格式的备份列表，每个备份包含名称、路径、创建时间和大小。
+    """
+    ctx = AppContext.get()
+    backup_manager = BackupManager(ctx.kb_path)
+    backups = backup_manager.list_backups()
+    return json.dumps(backups, ensure_ascii=False)
+
+
+@mcp.tool()
+async def restore_backup(backup_name: str) -> str:
+    """
+    从备份恢复知识库。
+
+    将知识库恢复到指定备份的状态。此操作会覆盖当前数据。
+
+    Args:
+        backup_name: 备份名称（可通过 list_backups 获取）。
+
+    Returns:
+        str: JSON 格式的恢复结果。
+
+    Raises:
+        ValueError: 当备份不存在或恢复失败时抛出。
+    """
+    ctx = AppContext.get()
+    backup_manager = BackupManager(ctx.kb_path)
+
+    backup_dir = backup_manager._get_backup_dir(backup_name)
+    if not backup_dir.exists():
+        raise ValueError(f"Backup not found: {backup_name}")
+
+    success = backup_manager.restore_backup(backup_dir)
+    if success:
+        return json.dumps(
+            {
+                "status": "success",
+                "message": f"Restored from backup: {backup_name}",
+            },
+            ensure_ascii=False,
+        )
+    else:
+        raise ValueError(f"Failed to restore backup: {backup_name}")
+
+
+@mcp.tool()
+async def create_backup(prefix: str = "") -> str:
+    """
+    创建知识库备份。
+
+    创建当前知识库状态的完整备份，包括数据库、数据文件和配置。
+
+    Args:
+        prefix: 备份名称前缀，用于标识备份类型。
+
+    Returns:
+        str: JSON 格式的备份结果，包含备份路径。
+    """
+    ctx = AppContext.get()
+    backup_manager = BackupManager(ctx.kb_path)
+
+    backup_path = backup_manager.create_backup(prefix=prefix)
+    if backup_path:
+        return json.dumps(
+            {
+                "status": "success",
+                "backup_path": str(backup_path),
+                "backup_name": backup_path.name,
+            },
+            ensure_ascii=False,
+        )
+    else:
+        raise ValueError("Failed to create backup")

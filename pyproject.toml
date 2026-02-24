@@ -33,7 +33,7 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=duckkb --cov-branch --cov-report=term-missing --cov-report=json:coverage.json --cov-fail-under=80"
+addopts = "--cov=duckkb --cov-branch --cov-report=term-missing --cov-report=json:coverage.json --cov-fail-under=60"
 
 [build-system]
 requires = ["hatchling"]

@@ -11,6 +11,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from duckkb.constants import DEFAULT_METRIC, VALID_METRICS
 from duckkb.ontology._validator import _validate_schema_structure
 
 
@@ -27,7 +28,7 @@ class VectorConfig(BaseModel):
 
     dim: int
     model: str
-    metric: str = "cosine"
+    metric: str = DEFAULT_METRIC
 
     @field_validator("dim")
     @classmethod
@@ -61,9 +62,8 @@ class VectorConfig(BaseModel):
         Raises:
             ValueError: 度量方式无效时抛出。
         """
-        valid_metrics = {"cosine", "l2", "inner"}
-        if v not in valid_metrics:
-            raise ValueError(f"metric must be one of: {valid_metrics}")
+        if v not in VALID_METRICS:
+            raise ValueError(f"metric must be one of: {VALID_METRICS}")
         return v
 
 

@@ -2,13 +2,13 @@
 
 import asyncio
 from pathlib import Path
-from typing import Any
 
 import orjson
 
 from duckkb.constants import (
     BUILD_DIR_NAME,
     DATA_DIR_NAME,
+    SYNC_STATE_FILE,
     SYS_SEARCH_TABLE,
     validate_table_name,
 )
@@ -19,6 +19,7 @@ from duckkb.exceptions import InvalidTableNameError
 from duckkb.logger import logger
 from duckkb.utils.embedding import get_embeddings
 from duckkb.utils.file_ops import (
+    atomic_write_file,
     dir_exists,
     file_exists,
     get_file_stat,
@@ -26,15 +27,65 @@ from duckkb.utils.file_ops import (
     mkdir,
     read_file,
     write_file,
-    atomic_write_file,
 )
 from duckkb.utils.text import compute_text_hash, segment_text
 
-SYNC_STATE_FILE = "sync_state.json"
-
-# Updated SearchRow definition to match new schema:
-# (ref_id, source_table, source_field, segmented_text, embedding_id, embedding, metadata, priority_weight)
 type SearchRow = tuple[str, str, str, str, str, list[float], str, float]
+
+
+def get_all_table_names() -> list[str]:
+    """获取数据库中所有用户表名。
+
+    Returns:
+        包含所有表名的列表（从 _sys_search 表中提取）。
+    """
+    with get_db(read_only=True) as conn:
+        rows = conn.execute(f"SELECT DISTINCT source_table FROM {SYS_SEARCH_TABLE}").fetchall()
+    return [row[0] for row in rows]
+
+
+async def persist_all_tables(kb_path: Path | None = None) -> dict[str, int]:
+    """将所有数据库表持久化到 JSONL 文件。
+
+    Args:
+        kb_path: 知识库路径，如果为 None 则从 AppContext 获取。
+
+    Returns:
+        包含每个表记录数的字典。
+    """
+    if kb_path is None:
+        from duckkb.config import AppContext
+
+        kb_path = AppContext.get().kb_path
+
+    table_names = await asyncio.to_thread(get_all_table_names)
+    results: dict[str, int] = {}
+
+    for table_name in table_names:
+        try:
+            records = await asyncio.to_thread(_fetch_table_records, table_name)
+            results[table_name] = len(records)
+
+            target_path = kb_path / DATA_DIR_NAME / f"{table_name}.jsonl"
+            lines = [orjson.dumps(r).decode("utf-8") for r in records]
+            content = "\n".join(lines)
+            if content:
+                content += "\n"
+
+            await atomic_write_file(target_path, content)
+            logger.info(f"Persisted table {table_name}: {len(records)} records")
+        except Exception as e:
+            logger.error(f"Failed to persist table {table_name}: {e}")
+            results[table_name] = -1
+
+    state_file = kb_path / BUILD_DIR_NAME / SYNC_STATE_FILE
+    if await file_exists(state_file):
+        try:
+            await write_file(state_file, "{}")
+        except Exception:
+            pass
+
+    return results
 
 
 async def sync_knowledge_base(kb_path: Path) -> None:
@@ -96,7 +147,7 @@ async def sync_knowledge_base(kb_path: Path) -> None:
     # 保存同步状态
     if not await dir_exists(state_file.parent):
         await mkdir(state_file.parent, parents=True, exist_ok=True)
-    
+
     await write_file(state_file, orjson.dumps(sync_state).decode("utf-8"))
 
     # 重建 FTS 索引
@@ -128,30 +179,30 @@ async def sync_db_to_file(table_name: str, kb_path: Path | None = None) -> None:
 
     try:
         records = await asyncio.to_thread(_fetch_table_records, table_name)
-        
+
         # Write records atomically using helper
         lines = [orjson.dumps(r).decode("utf-8") for r in records]
         content = "\n".join(lines)
         if content:
             content += "\n"
-            
+
         await atomic_write_file(target_path, content)
-        
+
         logger.info(f"Synced DB to file: {target_path} ({len(records)} records)")
-        
+
         # 更新同步状态，防止下次启动时误判为文件变更
         state_file = kb_path / BUILD_DIR_NAME / SYNC_STATE_FILE
         if await file_exists(state_file):
-             try:
+            try:
                 sync_state_content = await read_file(state_file)
                 sync_state = orjson.loads(sync_state_content)
-                
+
                 file_stat = await get_file_stat(target_path)
                 sync_state[table_name] = file_stat.st_mtime
-                
+
                 await write_file(state_file, orjson.dumps(sync_state).decode("utf-8"))
-             except Exception:
-                 pass
+            except Exception:
+                pass
 
     except Exception as e:
         logger.error(f"Failed to sync DB to file for {table_name}: {e}")
@@ -184,7 +235,7 @@ def _fetch_table_records(table_name: str) -> list[dict]:
             except orjson.JSONDecodeError:
                 pass
         elif isinstance(metadata_json, dict):  # DuckDB distinct might return dict?
-             records.append(metadata_json)
+            records.append(metadata_json)
     return records
 
 
@@ -221,12 +272,12 @@ async def _process_file(file_path: Path, table_name: str) -> None:
         else:
             # 检查内容是否变更
             current_hashes = set()
-            for key, value in record.items():
+            for _key, value in record.items():
                 if isinstance(value, str) and value.strip():
                     current_hashes.add(compute_text_hash(value))
-            
+
             db_hashes = set(db_state[ref_id].values())
-            
+
             if current_hashes != db_hashes:
                 to_upsert_records.append(record)
                 to_delete_ids.add(ref_id)
@@ -236,7 +287,9 @@ async def _process_file(file_path: Path, table_name: str) -> None:
         logger.info(f"Table {table_name} is up to date.")
         return
 
-    logger.info(f"Diff for {table_name}: {len(to_upsert_records)} to upsert, {len(to_delete_ids)} to delete.")
+    logger.info(
+        f"Diff for {table_name}: {len(to_upsert_records)} to upsert, {len(to_delete_ids)} to delete."
+    )
 
     # 4.1 删除
     if to_delete_ids:
@@ -279,8 +332,8 @@ def _get_db_state(table_name: str) -> dict[str, dict[str, str]]:
             f"SELECT ref_id, source_field, embedding_id FROM {SYS_SEARCH_TABLE} WHERE source_table = ?",
             [table_name],
         ).fetchall()
-    
-    state = {}
+
+    state: dict[str, dict[str, str]] = {}
     for ref_id, field, emb_id in rows:
         if ref_id not in state:
             state[ref_id] = {}
@@ -312,7 +365,7 @@ async def _upsert_records(table_name: str, records: list[dict]) -> None:
         records: 要插入的记录列表。
     """
     embedding_requests = []
-    
+
     for i, record in enumerate(records):
         for key, value in record.items():
             if isinstance(value, str) and value.strip():
@@ -343,12 +396,12 @@ async def _upsert_records(table_name: str, records: list[dict]) -> None:
     for idx, (original_idx, key, text) in enumerate(embedding_requests):
         if idx >= len(embeddings) or not embeddings[idx]:
             continue
-            
+
         record = records[original_idx]
         ref_id = str(record.get("id", ""))
         embedding_id = compute_text_hash(text)
         metadata_json = orjson.dumps(record).decode("utf-8")
-        
+
         rows_to_insert.append(
             (
                 ref_id,
@@ -373,7 +426,4 @@ def _bulk_insert_rows(rows: list[SearchRow]) -> None:
         rows: 要插入的行数据列表。
     """
     with get_db(read_only=False) as conn:
-        conn.executemany(
-            f"INSERT INTO {SYS_SEARCH_TABLE} VALUES (?, ?, ?, ?, ?, ?, ?, ?)", 
-            rows
-        )
+        conn.executemany(f"INSERT INTO {SYS_SEARCH_TABLE} VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows)

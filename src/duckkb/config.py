@@ -20,6 +20,7 @@ from duckkb.constants import (
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_LOG_LEVEL,
     EMBEDDING_MODEL_DIMS,
+    VALID_EMBEDDING_DIMS,
     VALID_LOG_LEVELS,
 )
 from duckkb.ontology import Ontology
@@ -68,8 +69,8 @@ class EmbeddingConfig(BaseModel):
         """
         if v <= 0:
             raise ValueError("dim must be positive")
-        if v not in [1536, 3072]:
-            raise ValueError("dim must be 1536 or 3072 for OpenAI models")
+        if v not in VALID_EMBEDDING_DIMS:
+            raise ValueError(f"dim must be one of {list(VALID_EMBEDDING_DIMS)} for OpenAI models")
         return v
 
     @field_validator("model")

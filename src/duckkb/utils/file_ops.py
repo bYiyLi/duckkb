@@ -9,13 +9,13 @@ import glob
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, List, Union
+from typing import Any
 
 import aiofiles
 import orjson
 
 
-async def read_file(file_path: Union[str, Path], encoding: str = "utf-8") -> str:
+async def read_file(file_path: str | Path, encoding: str = "utf-8") -> str:
     """Asynchronously reads the content of a file.
 
     Args:
@@ -29,11 +29,11 @@ async def read_file(file_path: Union[str, Path], encoding: str = "utf-8") -> str
         FileNotFoundError: If the file does not exist.
         IOError: If an I/O error occurs during reading.
     """
-    async with aiofiles.open(file_path, mode="r", encoding=encoding) as f:
+    async with aiofiles.open(file_path, encoding=encoding) as f:
         return await f.read()
 
 
-async def read_json(file_path: Union[str, Path], encoding: str = "utf-8") -> Any:
+async def read_json(file_path: str | Path, encoding: str = "utf-8") -> Any:
     """Asynchronously reads a JSON file.
 
     Args:
@@ -51,7 +51,7 @@ async def read_json(file_path: Union[str, Path], encoding: str = "utf-8") -> Any
     return orjson.loads(content)
 
 
-async def read_jsonl(file_path: Union[str, Path], encoding: str = "utf-8") -> List[Any]:
+async def read_jsonl(file_path: str | Path, encoding: str = "utf-8") -> list[Any]:
     """Asynchronously reads a JSONL file.
 
     Args:
@@ -74,9 +74,7 @@ async def read_jsonl(file_path: Union[str, Path], encoding: str = "utf-8") -> Li
     return records
 
 
-async def write_file(
-    file_path: Union[str, Path], content: str, encoding: str = "utf-8"
-) -> None:
+async def write_file(file_path: str | Path, content: str, encoding: str = "utf-8") -> None:
     """Asynchronously writes content to a file.
 
     Args:
@@ -92,7 +90,7 @@ async def write_file(
 
 
 async def write_json(
-    file_path: Union[str, Path],
+    file_path: str | Path,
     data: Any,
     encoding: str = "utf-8",
     atomic: bool = False,
@@ -115,9 +113,7 @@ async def write_json(
         await write_file(file_path, content, encoding=encoding)
 
 
-async def atomic_write_file(
-    file_path: Union[str, Path], content: str, encoding: str = "utf-8"
-) -> None:
+async def atomic_write_file(file_path: str | Path, content: str, encoding: str = "utf-8") -> None:
     """Asynchronously writes content to a file atomically.
 
     This function writes the content to a temporary file in the same directory
@@ -146,15 +142,13 @@ async def atomic_write_file(
     # for this specific atomic pattern involving rename across filesystems (if we used /tmp)
     # But here we use same dir to ensure atomic rename.
 
-    fd, temp_path = await asyncio.to_thread(
-        tempfile.mkstemp, dir=directory, text=True
-    )
-    
+    fd, temp_path = await asyncio.to_thread(tempfile.mkstemp, dir=directory, text=True)
+
     try:
         # We need to close the file descriptor opened by mkstemp
         # because aiofiles will open it again by path
         await asyncio.to_thread(os.close, fd)
-        
+
         async with aiofiles.open(temp_path, mode="w", encoding=encoding) as f:
             await f.write(content)
             await f.flush()
@@ -170,7 +164,7 @@ async def atomic_write_file(
         raise
 
 
-async def file_exists(file_path: Union[str, Path]) -> bool:
+async def file_exists(file_path: str | Path) -> bool:
     """Asynchronously checks if a file exists.
 
     Args:
@@ -182,7 +176,7 @@ async def file_exists(file_path: Union[str, Path]) -> bool:
     return await asyncio.to_thread(os.path.isfile, file_path)
 
 
-async def dir_exists(dir_path: Union[str, Path]) -> bool:
+async def dir_exists(dir_path: str | Path) -> bool:
     """Asynchronously checks if a directory exists.
 
     Args:
@@ -194,7 +188,7 @@ async def dir_exists(dir_path: Union[str, Path]) -> bool:
     return await asyncio.to_thread(os.path.isdir, dir_path)
 
 
-async def glob_files(pattern: str) -> List[str]:
+async def glob_files(pattern: str) -> list[str]:
     """Asynchronously finds files matching a glob pattern.
 
     Args:
@@ -206,7 +200,7 @@ async def glob_files(pattern: str) -> List[str]:
     return await asyncio.to_thread(glob.glob, pattern)
 
 
-async def mkdir(path: Union[str, Path], parents: bool = True, exist_ok: bool = True) -> None:
+async def mkdir(path: str | Path, parents: bool = True, exist_ok: bool = True) -> None:
     """Asynchronously creates a directory.
 
     Args:
@@ -220,7 +214,7 @@ async def mkdir(path: Union[str, Path], parents: bool = True, exist_ok: bool = T
     await asyncio.to_thread(os.makedirs, path, exist_ok=exist_ok)
 
 
-async def unlink(path: Union[str, Path]) -> None:
+async def unlink(path: str | Path) -> None:
     """Asynchronously removes a file.
 
     Args:
@@ -233,7 +227,7 @@ async def unlink(path: Union[str, Path]) -> None:
     await asyncio.to_thread(os.unlink, path)
 
 
-async def get_file_stat(path: Union[str, Path]) -> os.stat_result:
+async def get_file_stat(path: str | Path) -> os.stat_result:
     """Asynchronously gets file status.
 
     Args:

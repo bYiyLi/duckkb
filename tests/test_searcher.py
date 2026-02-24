@@ -2,7 +2,13 @@ import pytest
 
 from duckkb.constants import SYS_SEARCH_TABLE
 from duckkb.db import get_db
-from duckkb.engine.searcher import _execute_search_query, smart_search, _build_hybrid_query, _process_search_results, PREFETCH_MULTIPLIER
+from duckkb.engine.searcher import (
+    PREFETCH_MULTIPLIER,
+    _build_hybrid_query,
+    _execute_search_query,
+    _process_search_results,
+    smart_search,
+)
 from duckkb.schema import init_schema
 
 
@@ -16,11 +22,14 @@ class TestSearcher:
     @pytest.mark.asyncio
     async def test_smart_search_with_data(self, mock_kb_path):
         await init_schema()
+        
+        # Create a dummy embedding vector
+        embedding = [0.1] * 1536
 
         with get_db(read_only=False) as conn:
             conn.execute(
-                f"INSERT INTO {SYS_SEARCH_TABLE} VALUES (?, ?, ?, ?, ?, ?, ?)",
-                ("1", "users", "name", "Alice test", "hash1", '{"id": "1"}', 1.0),
+                f"INSERT INTO {SYS_SEARCH_TABLE} (ref_id, source_table, source_field, segmented_text, embedding_id, embedding, metadata, priority_weight) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                ("1", "users", "name", "Alice test", "hash1", embedding, '{"id": "1"}', 1.0),
             )
 
         results = await smart_search("Alice", limit=5)
@@ -29,15 +38,17 @@ class TestSearcher:
     @pytest.mark.asyncio
     async def test_smart_search_with_table_filter(self, mock_kb_path):
         await init_schema()
+        
+        embedding = [0.1] * 1536
 
         with get_db(read_only=False) as conn:
             conn.execute(
-                f"INSERT INTO {SYS_SEARCH_TABLE} VALUES (?, ?, ?, ?, ?, ?, ?)",
-                ("1", "users", "name", "Alice", "hash1", '{"id": "1"}', 1.0),
+                f"INSERT INTO {SYS_SEARCH_TABLE} (ref_id, source_table, source_field, segmented_text, embedding_id, embedding, metadata, priority_weight) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                ("1", "users", "name", "Alice", "hash1", embedding, '{"id": "1"}', 1.0),
             )
             conn.execute(
-                f"INSERT INTO {SYS_SEARCH_TABLE} VALUES (?, ?, ?, ?, ?, ?, ?)",
-                ("2", "products", "name", "Widget", "hash2", '{"id": "2"}', 1.0),
+                f"INSERT INTO {SYS_SEARCH_TABLE} (ref_id, source_table, source_field, segmented_text, embedding_id, embedding, metadata, priority_weight) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                ("2", "products", "desc", "Pizza", "hash2", embedding, '{"id": "2"}', 1.0),
             )
 
         results = await smart_search("Alice", limit=5, table_filter="users")
@@ -46,11 +57,13 @@ class TestSearcher:
     @pytest.mark.asyncio
     async def test_smart_search_alpha_clamping(self, mock_kb_path):
         await init_schema()
+        
+        embedding = [0.1] * 1536
 
         with get_db(read_only=False) as conn:
             conn.execute(
-                f"INSERT INTO {SYS_SEARCH_TABLE} VALUES (?, ?, ?, ?, ?, ?, ?)",
-                ("1", "users", "name", "Alice", "hash1", '{"id": "1"}', 1.0),
+                f"INSERT INTO {SYS_SEARCH_TABLE} (ref_id, source_table, source_field, segmented_text, embedding_id, embedding, metadata, priority_weight) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                ("1", "users", "name", "Alice", "hash1", embedding, '{"id": "1"}', 1.0),
             )
 
         results = await smart_search("Alice", limit=5, alpha=2.0)

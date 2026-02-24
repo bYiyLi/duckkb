@@ -3,18 +3,13 @@
 本模块提供 DuckKB 的 CLI 命令和 MCP 服务启动功能。
 """
 
-import asyncio
 from pathlib import Path
 
 import typer
 
 from duckkb import __version__
 from duckkb.config import AppContext
-from duckkb.engine.sync import sync_knowledge_base
-from duckkb.logger import logger, setup_logging
-from duckkb.mcp.server import mcp
-from duckkb.schema import init_schema
-from duckkb.utils.text import init_jieba_async
+from duckkb.logger import setup_logging
 
 DEFAULT_KB_PATH = Path("./knowledge-bases/default")
 
@@ -43,28 +38,14 @@ def main(
     setup_logging(ctx.kb_config.LOG_LEVEL)
 
 
-async def _startup():
-    """Startup initialization tasks."""
-    logger.info("Starting up...")
-    try:
-        await init_schema()
-        # Initialize jieba in parallel with schema init or just after
-        await init_jieba_async()
-        # Perform incremental sync from file to DB on startup
-        await sync_knowledge_base(AppContext.get().kb_path)
-    except Exception as e:
-        logger.error(f"Startup initialization failed: {e}")
-        # We continue even if sync fails, so the server can still run (maybe with stale data)
-    logger.info("Startup complete.")
-
-
 @app.command()
 def serve():
     """启动 MCP 服务器。
 
-    初始化数据库模式并同步知识库后启动 MCP 服务。
+    知识库初始化和关闭时的数据持久化由 FastMCP lifespan 管理。
     """
-    asyncio.run(_startup())
+    from duckkb.mcp.server import mcp
+
     mcp.run()
 
 

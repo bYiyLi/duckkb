@@ -8,7 +8,6 @@ import asyncio
 
 from duckkb.constants import SYS_SEARCH_TABLE, validate_table_name
 from duckkb.db import get_db
-from duckkb.logger import logger
 
 
 def delete_records_from_db(table_name: str, ids: list[str]) -> None:

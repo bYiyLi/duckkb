@@ -1,313 +1,327 @@
-# DuckKB MCP 程序生命周期分析
+# DuckKB 知识库生命周期优化方案
 
-## 概述
+## 背景
 
-DuckKB 是一个基于 FastMCP 框架的知识库服务，提供向量搜索和数据管理功能。本文档分析其完整的生命周期流程。
+当前 DuckKB 的知识库初始化在 MCP 服务启动前通过 `asyncio.run(_startup())` 完成，存在以下问题：
+
+1. **生命周期分离**：知识库初始化与 MCP 生命周期独立，无法利用 FastMCP 的生命周期管理
+2. **缺少关闭钩子**：服务关闭时没有数据持久化机制
+3. **同步工具功能单一**：`sync_knowledge_base` 工具仅做文件到数据库的同步，不支持 ontology 变更和数据迁移
+
+## 优化目标
+
+1. 将知识库生命周期与 MCP 生命周期整合
+2. 在 MCP 关闭时自动将数据库数据写入本地磁盘
+3. 增强 `sync_knowledge_base` 工具，支持 ontology 配置变更和数据迁移
 
 ***
 
-## 生命周期阶段
+## 一、生命周期整合方案
 
-### 1. 启动阶段 (Initialization)
+### 1.1 FastMCP Lifespan 机制
 
-#### 1.1 CLI 入口
-
-```
-用户执行: duckkb serve --kb-path <path>
-```
-
-入口点位于 [main.py](file:///Users/yi/Code/duckkb/src/duckkb/main.py)，使用 `typer` 框架处理命令行参数。
-
-#### 1.2 应用上下文初始化
+FastMCP 提供了可组合的生命周期装饰器 `@lifespan`，支持通过 `|` 操作符组合多个生命周期：
 
 ```python
-# main.py:39-42
-if not kb_path.exists():
-    kb_path.mkdir(parents=True, exist_ok=True)
-ctx = AppContext.init(kb_path)
-setup_logging(ctx.kb_config.LOG_LEVEL)
+from fastmcp.server.lifespan import lifespan
+
+@lifespan
+async def kb_lifespan(server):
+    # 启动时初始化
+    await init_knowledge_base()
+    yield {"kb": knowledge_base}
+    # 关闭时清理
+    await persist_to_disk()
 ```
 
-**关键操作：**
-
-1. 创建知识库目录（如不存在）
-2. 初始化 `AppContext` 单例
-3. 加载 `config.yaml` 配置
-4. 配置日志级别
-
-#### 1.3 AppContext 单例结构
+### 1.2 新架构设计
 
 ```
-AppContext (单例)
-├── kb_path: Path              # 知识库根目录
-├── kb_config: KBConfig        # 知识库配置
-│   ├── embedding: EmbeddingConfig
-│   │   ├── model: str        # 嵌入模型名称
-│   │   └── dim: int          # 向量维度
-│   ├── log_level: str
-│   └── ontology: Ontology     # 本体定义
-├── global_config: GlobalConfig
-│   ├── OPENAI_API_KEY
-│   └── OPENAI_BASE_URL
-├── _openai_client: AsyncOpenAI (懒加载)
-└── _jieba_initialized: bool
+┌─────────────────────────────────────────────────────────────┐
+│                    FastMCP Lifespan                         │
+├─────────────────────────────────────────────────────────────┤
+│  启动阶段 (Startup)                                          │
+│  ├── 加载配置 (config.yaml)                                  │
+│  ├── 初始化数据库模式 (init_schema)                          │
+│  ├── 同步知识库 (sync_knowledge_base)                        │
+│  └── 预热资源 (jieba 分词器等)                               │
+├─────────────────────────────────────────────────────────────┤
+│  运行阶段 (Runtime)                                          │
+│  └── MCP 工具调用处理                                        │
+├─────────────────────────────────────────────────────────────┤
+│  关闭阶段 (Shutdown)                                         │
+│  ├── 将数据库数据回写到 JSONL 文件                           │
+│  ├── 保存同步状态                                            │
+│  └── 清理资源                                                │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-#### 1.4 启动初始化任务
+### 1.3 代码变更
+
+#### main.py 重构
 
 ```python
-# main.py:45-55
-async def _startup():
-    await init_schema()                    # 初始化数据库模式
-    await sync_knowledge_base(kb_path)     # 同步知识库
+from contextlib import asynccontextmanager
+from fastmcp import FastMCP
+from fastmcp.server.lifespan import lifespan
+
+@lifespan
+async def kb_lifespan(server: FastMCP):
+    """知识库生命周期管理。"""
+    ctx = AppContext.get()
+    
+    # 启动时初始化
+    logger.info("Initializing knowledge base...")
+    await init_schema()
+    await sync_knowledge_base(ctx.kb_path)
+    logger.info("Knowledge base initialized.")
+    
+    yield {"kb_path": ctx.kb_path}
+    
+    # 关闭时持久化
+    logger.info("Persisting knowledge base to disk...")
+    await persist_all_tables()
+    logger.info("Knowledge base persisted.")
+
+mcp = FastMCP("DuckKB", lifespan=kb_lifespan)
 ```
 
-**init\_schema() 流程：**
-
-1. 创建系统表 `_sys_search`（搜索索引表）
-2. 创建系统表 `_sys_cache`（嵌入缓存表）
-3. 创建 HNSW 向量索引
-4. 根据本体定义创建用户表
-
-**sync\_knowledge\_base() 流程：**
-
-1. 扫描 `data/` 目录下的 `.jsonl` 文件
-2. 对比文件修改时间与同步状态
-3. 增量同步变更的记录
-4. 生成向量嵌入（调用 OpenAI API）
-5. 更新搜索索引
-6. 清理过期缓存
-
-***
-
-### 2. 运行阶段 (Runtime)
-
-#### 2.1 MCP 服务启动
+#### 新增 persist\_all\_tables 函数
 
 ```python
-# main.py:64-65
-asyncio.run(_startup())
-mcp.run()  # FastMCP 服务启动
-```
-
-FastMCP 服务通过 stdio 传输协议与 MCP 客户端通信。
-
-#### 2.2 提供的 MCP 工具
-
-| 工具名称                  | 功能     | 关键依赖                      |
-| --------------------- | ------ | ------------------------- |
-| `check_health`        | 健康检查   | AppContext                |
-| `sync_knowledge_base` | 同步知识库  | sync.py                   |
-| `get_schema_info`     | 获取模式信息 | schema.py                 |
-| `smart_search`        | 混合搜索   | searcher.py, embedding.py |
-| `query_raw_sql`       | SQL 查询 | searcher.py               |
-| `validate_and_import` | 导入数据   | crud.py                   |
-| `delete_records`      | 删除记录   | crud.py                   |
-
-#### 2.3 核心数据流
-
-```
-┌─────────────────┐
-│  JSONL 文件      │  data/*.jsonl
-│  (数据源)        │
-└────────┬────────┘
-         │ sync_knowledge_base()
-         ▼
-┌─────────────────┐
-│    DuckDB       │  .build/knowledge.db
-│  ┌───────────┐  │
-│  │_sys_search│  │  搜索索引表
-│  │_sys_cache │  │  嵌入缓存表
-│  └───────────┘  │
-└────────┬────────┘
-         │ smart_search() / query_raw_sql()
-         ▼
-┌─────────────────┐
-│   MCP 工具响应   │
-└─────────────────┘
+async def persist_all_tables() -> None:
+    """将所有数据库表持久化到 JSONL 文件。"""
+    ctx = AppContext.get()
+    data_dir = ctx.kb_path / DATA_DIR_NAME
+    
+    # 获取所有表名
+    tables = await _get_all_table_names()
+    
+    for table_name in tables:
+        await sync_db_to_file(table_name, ctx.kb_path)
 ```
 
 ***
 
-### 3. 关键组件生命周期
+## 二、sync\_knowledge\_base 工具增强
 
-#### 3.1 数据库连接管理
+### 2.1 新增功能
+
+1. **支持传入新的 ontology 配置**
+2. **Ontology 变更时的数据迁移**
+3. **事务性操作与回滚机制**
+
+### 2.2 接口设计
+
+````python
+@mcp.tool()
+async def sync_knowledge_base(
+    ontology_yaml: str | None = None,
+    force: bool = False
+) -> str:
+    """
+    同步知识库，支持 ontology 配置变更和数据迁移。
+
+    Args:
+        ontology_yaml: 可选的新 ontology 配置（YAML 格式字符串）。
+                      如果提供，将进行：
+            - YAML 解析与配置校验
+            - 数据库模式迁移
+            - 数据迁移（如需要）
+            - 失败时自动回滚
+                      
+                      示例：
+                      ```yaml
+                      nodes:
+                        documents:
+                          table: documents
+                          identity: [id]
+                          schema:
+                            type: object
+                            properties:
+                              id:
+                                type: string
+                              title:
+                                type: string
+                              content:
+                                type: string
+                            required: [id]
+                          vectors:
+                            content:
+                              dim: 1536
+                              model: text-embedding-3-small
+                      ```
+        force: 是否强制重新同步所有数据（忽略增量检测）。
+
+    Returns:
+        str: JSON 格式的操作结果，包含迁移统计和状态。
+    """
+````
+
+### 2.3 Ontology 变更处理流程
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│              Ontology 变更处理流程                           │
+├─────────────────────────────────────────────────────────────┤
+│  1. 验证新 Ontology 配置                                     │
+│     ├── JSON Schema 校验                                     │
+│     └── 兼容性检查                                           │
+├─────────────────────────────────────────────────────────────┤
+│  2. 创建备份                                                 │
+│     ├── 备份当前数据库文件                                   │
+│     └── 备份当前 JSONL 文件                                  │
+├─────────────────────────────────────────────────────────────┤
+│  3. 执行迁移                                                 │
+│     ├── 分析变更类型                                         │
+│     │   ├── 新增表：创建新表                                 │
+│     │   ├── 删除表：删除表（需确认）                         │
+│     │   ├── 新增字段：添加列                                 │
+│     │   ├── 删除字段：保留数据，仅从索引移除                 │
+│     │   └── 字段类型变更：尝试转换或报错                     │
+│     └── 更新搜索索引                                         │
+├─────────────────────────────────────────────────────────────┤
+│  4. 验证迁移结果                                             │
+│     ├── 数据完整性检查                                       │
+│     └── 索引有效性检查                                       │
+├─────────────────────────────────────────────────────────────┤
+│  5. 提交或回滚                                               │
+│     ├── 成功：删除备份，更新配置                             │
+│     └── 失败：恢复备份，报告错误                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 2.4 变更类型与处理策略
+
+| 变更类型   | 处理策略          | 数据风险 |
+| ------ | ------------- | ---- |
+| 新增表    | 创建新表，无需迁移     | 无    |
+| 删除表    | 需要用户确认，删除表和索引 | 高    |
+| 新增字段   | 添加列，重新索引相关数据  | 低    |
+| 删除字段   | 从索引移除，保留原始数据  | 低    |
+| 字段类型变更 | 尝试类型转换，失败则报错  | 中    |
+| 向量维度变更 | 需要重新生成所有嵌入    | 中    |
+
+### 2.5 备份与回滚机制
 
 ```python
-# db.py
-@asynccontextmanager
-async def get_async_db(read_only: bool = True):
-    manager = get_db_manager()
-    conn = await asyncio.to_thread(manager.get_connection, read_only)
-    try:
-        yield conn
-    finally:
-        await asyncio.to_thread(conn.close)
-```
-
-**特点：**
-
-* 使用上下文管理器确保连接释放
-
-* 通过 `asyncio.to_thread` 封装同步操作
-
-* 支持只读/读写模式
-
-#### 3.2 OpenAI 客户端（懒加载）
-
-```python
-# config.py:190-201
-@property
-def openai_client(self) -> AsyncOpenAI:
-    if self._openai_client is None:
-        self._openai_client = AsyncOpenAI(
-            api_key=self.global_config.OPENAI_API_KEY,
-            base_url=self.global_config.OPENAI_BASE_URL,
-        )
-    return self._openai_client
-```
-
-#### 3.3 嵌入向量缓存机制
-
-```
-请求嵌入向量
-     │
-     ▼
-┌─────────────────┐
-│ 计算文本 Hash    │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐     命中
-│ 查询 _sys_cache │──────────▶ 返回缓存向量
-└────────┬────────┘
-         │ 未命中
-         ▼
-┌─────────────────┐
-│ 调用 OpenAI API │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ 存入缓存表       │
-└────────┬────────┘
-         │
-         ▼
-     返回向量
+class MigrationManager:
+    """数据库迁移管理器。"""
+    
+    async def create_backup(self) -> Path:
+        """创建备份。"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_dir = self.kb_path / BUILD_DIR_NAME / "backups" / timestamp
+        
+        # 备份数据库
+        shutil.copy2(self.db_path, backup_dir / DB_FILE_NAME)
+        
+        # 备份 JSONL 文件
+        shutil.copytree(self.data_dir, backup_dir / DATA_DIR_NAME)
+        
+        # 备份配置
+        shutil.copy2(self.kb_path / "config.yaml", backup_dir / "config.yaml")
+        
+        return backup_dir
+    
+    async def rollback(self, backup_dir: Path) -> None:
+        """从备份回滚。"""
+        # 恢复数据库
+        shutil.copy2(backup_dir / DB_FILE_NAME, self.db_path)
+        
+        # 恢复 JSONL 文件
+        shutil.rmtree(self.data_dir)
+        shutil.copytree(backup_dir / DATA_DIR_NAME, self.data_dir)
+        
+        # 恢复配置
+        shutil.copy2(backup_dir / "config.yaml", self.kb_path / "config.yaml")
 ```
 
 ***
 
-### 4. 同步机制详解
+## 三、实现计划
 
-#### 4.1 增量同步策略
+### 3.1 文件变更清单
 
-```python
-# sync.py:83-85
-if sync_state.get(table_name) == mtime:
-    logger.debug(f"Skipping {table_name}, up to date (mtime check).")
-    continue
-```
+| 文件                    | 变更类型 | 说明                          |
+| --------------------- | ---- | --------------------------- |
+| `main.py`             | 重构   | 使用 FastMCP lifespan         |
+| `mcp/server.py`       | 修改   | 增强 sync\_knowledge\_base 工具 |
+| `engine/sync.py`      | 扩展   | 添加迁移逻辑                      |
+| `engine/migration.py` | 新增   | 迁移管理器                       |
+| `engine/backup.py`    | 新增   | 备份与恢复                       |
+| `config.py`           | 扩展   | 支持运行时 ontology 更新           |
 
-**同步状态文件：** `.build/sync_state.json`
+### 3.2 实现步骤
 
-```json
-{
-  "table1": 1709012345.678,  // 文件修改时间戳
-  "table2": 1709012346.789
-}
-```
+1. **Phase 1: 生命周期整合**
 
-#### 4.2 记录级 Diff
+   * 创建 `kb_lifespan` 生命周期管理器
 
-```python
-# sync.py:214-231
-to_delete_ids = set(db_state.keys()) - set(file_map.keys())
-to_upsert_records = []
+   * 实现 `persist_all_tables` 函数
 
-for ref_id, record in file_map.items():
-    if ref_id not in db_state:
-        to_upsert_records.append(record)
-    else:
-        # 检查内容哈希是否变更
-        current_hashes = {compute_text_hash(v) for v in record.values() if isinstance(v, str)}
-        db_hashes = set(db_state[ref_id].values())
-        if current_hashes != db_hashes:
-            to_upsert_records.append(record)
-            to_delete_ids.add(ref_id)
-```
+   * 重构 `main.py` 使用 FastMCP lifespan
 
-***
+2. **Phase 2: 备份与恢复**
 
-### 5. 关闭阶段 (Shutdown)
+   * 实现 `BackupManager` 类
 
-当前实现中，MCP 服务通过 FastMCP 框架处理关闭信号。主要清理工作：
+   * 支持数据库和配置文件的备份/恢复
 
-1. 数据库连接自动关闭（通过上下文管理器）
-2. 无显式的资源清理钩子
+   * 添加备份清理策略
 
-**潜在改进点：**
+3. **Phase 3: 迁移机制**
 
-* 添加优雅关闭钩子
+   * 实现 `MigrationManager` 类
 
-* 确保所有异步任务完成
+   * 支持各种变更类型的检测和处理
 
-* 刷新未写入的数据
+   * 实现事务性迁移和自动回滚
+
+4. **Phase 4: 工具增强**
+
+   * 扩展 `sync_knowledge_base` 工具接口
+
+   * 添加 ontology 参数支持
+
+   * 完善错误处理和用户反馈
 
 ***
 
-## 目录结构
+## 四、风险与缓解措施
 
-```
-knowledge-bases/default/
-├── config.yaml           # 知识库配置
-├── README.md             # 知识库说明
-├── schema.sql            # 可选：自定义模式
-├── data/                 # 数据文件目录
-│   ├── table1.jsonl
-│   └── table2.jsonl
-└── .build/               # 构建产物（不提交）
-    ├── knowledge.db      # DuckDB 数据库
-    └── sync_state.json   # 同步状态
-```
+| 风险            | 影响    | 缓解措施           |
+| ------------- | ----- | -------------- |
+| 迁移过程中断        | 数据不一致 | 事务性操作 + 自动回滚   |
+| 磁盘空间不足        | 备份失败  | 迁移前检查空间，提供清理建议 |
+| Ontology 配置错误 | 迁移失败  | 严格校验 + 兼容性检查   |
+| 向量维度变更        | 嵌入失效  | 提示用户，提供重新生成选项  |
 
 ***
 
-## 依赖关系图
+## 五、测试计划
 
-```
-main.py
-├── config.py (AppContext, KBConfig)
-├── schema.py (init_schema)
-├── engine/sync.py (sync_knowledge_base)
-│   ├── db.py (get_db)
-│   ├── utils/embedding.py (get_embeddings)
-│   └── utils/text.py (segment_text, compute_text_hash)
-└── mcp/server.py (FastMCP tools)
-    ├── engine/searcher.py (smart_search, query_raw_sql)
-    ├── engine/crud.py (add_documents, delete_documents)
-    └── schema.py (get_schema_info)
-```
+1. **单元测试**
 
-***
+   * 生命周期钩子测试
 
-## 总结
+   * 备份/恢复测试
 
-DuckKB MCP 程序的生命周期遵循以下模式：
+   * 迁移逻辑测试
 
-1. **初始化** → CLI 解析 → 上下文初始化 → 数据库模式创建 → 数据同步
-2. **运行** → FastMCP 服务监听 → 工具调用处理 → 数据库查询/更新
-3. **关闭** → 信号处理 → 资源释放
+2. **集成测试**
 
-关键设计特点：
+   * 完整迁移流程测试
 
-* 单例模式管理全局状态
+   * 回滚场景测试
 
-* 懒加载优化资源使用
+   * 并发操作测试
 
-* 增量同步减少不必要的计算
+3. **端到端测试**
 
-* 嵌入缓存降低 API 成本
+   * MCP 客户端调用测试
 
-* 异步架构避免阻塞操作
+   * 大数据量迁移测试
+
+   * 异常中断恢复测试
 

@@ -5,13 +5,15 @@ from typing import Any
 import orjson
 
 from duckkb.config import get_kb_config
-from duckkb.constants import QUERY_DEFAULT_LIMIT, QUERY_RESULT_SIZE_LIMIT
+from duckkb.constants import (
+    PREFETCH_MULTIPLIER,
+    QUERY_DEFAULT_LIMIT,
+    QUERY_RESULT_SIZE_LIMIT,
+)
 from duckkb.db import get_db
 from duckkb.exceptions import DatabaseError
 from duckkb.logger import logger
 from duckkb.utils.embedding import get_embedding
-
-PREFETCH_MULTIPLIER = 2
 
 
 async def smart_search(
@@ -49,9 +51,7 @@ async def smart_search(
         return []
 
     try:
-        sql, params = _build_hybrid_query(
-            query, query_vec, limit, table_filter, vector_w, text_w
-        )
+        sql, params = _build_hybrid_query(query, query_vec, limit, table_filter, vector_w, text_w)
         rows = await asyncio.to_thread(_execute_search_query, sql, params)
         return _process_search_results(rows)
 

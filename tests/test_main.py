@@ -21,13 +21,13 @@ class TestMainCLI:
 
     def test_serve_command_creates_kb_path(self, tmp_path):
         kb_path = tmp_path / "test_kb"
-        with patch("duckkb.main.mcp.run"):
+        with patch("duckkb.mcp.server.mcp.run"):
             runner.invoke(app, ["--kb-path", str(kb_path), "serve"])
         assert kb_path.exists()
 
     def test_app_context_initialized_with_kb_path(self, tmp_path):
         kb_path = tmp_path / "test_kb"
-        with patch("duckkb.main.mcp.run"):
+        with patch("duckkb.mcp.server.mcp.run"):
             runner.invoke(app, ["--kb-path", str(kb_path), "serve"])
         AppContext.reset()
 

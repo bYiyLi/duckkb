@@ -1,13 +1,8 @@
 """Tests for async file operations."""
 
-import asyncio
-import os
-import tempfile
-from pathlib import Path
 from unittest import mock
 
 import pytest
-import aiofiles
 
 from duckkb.utils.file_ops import (
     atomic_write_file,

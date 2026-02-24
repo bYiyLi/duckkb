@@ -13,6 +13,7 @@ import duckdb
 
 from duckkb.config import AppContext
 from duckkb.constants import BUILD_DIR_NAME, DB_FILE_NAME
+from duckkb.logger import logger
 
 
 class DBManager:
@@ -42,7 +43,18 @@ class DBManager:
             DuckDB 连接对象。
         """
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        return duckdb.connect(str(self.db_path), read_only=read_only)
+        conn = duckdb.connect(str(self.db_path), read_only=read_only)
+
+        # Initialize extensions and settings
+        try:
+            conn.execute("INSTALL vss; LOAD vss;")
+            conn.execute("SET hnsw_enable_experimental_persistence=true;")
+        except Exception as e:
+            # Might fail if read-only or extension issues, but we try best effort
+            logger.warning(f"Failed to load vss extension: {e}")
+
+
+        return conn
 
 
 def get_db_manager() -> DBManager:
