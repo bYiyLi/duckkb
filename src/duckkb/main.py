@@ -57,7 +57,7 @@ def serve():
 @app.command()
 def version():
     """显示版本信息。"""
-    print(f"DuckKB v{__version__}")
+    typer.echo(f"DuckKB v{__version__}")
 
 
 if __name__ == "__main__":

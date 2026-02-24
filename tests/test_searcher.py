@@ -1,6 +1,5 @@
 import pytest
 
-from duckkb.config import AppContext
 from duckkb.constants import SYS_SEARCH_TABLE
 from duckkb.db import get_db
 from duckkb.engine.searcher import _execute_search, smart_search

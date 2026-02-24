@@ -25,17 +25,17 @@ class TestSchema:
 
     @pytest.mark.asyncio
     async def test_get_schema_info_returns_string(self, mock_kb_path):
-        info = get_schema_info()
+        info = await get_schema_info()
         assert isinstance(info, str)
         assert "System Schema" in info
 
     @pytest.mark.asyncio
     async def test_get_schema_info_includes_sys_tables(self, mock_kb_path):
-        info = get_schema_info()
+        info = await get_schema_info()
         assert "_sys_search" in info
         assert "_sys_cache" in info
 
     @pytest.mark.asyncio
     async def test_get_schema_info_includes_mermaid(self, mock_kb_path):
-        info = get_schema_info()
+        info = await get_schema_info()
         assert "mermaid" in info.lower() or "ER Diagram" in info

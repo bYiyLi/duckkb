@@ -4,6 +4,7 @@
 - OpenAI API 配置（全局）
 - 嵌入模型配置（知识库级别）
 - 日志级别配置
+- 本体定义配置
 - 应用上下文单例管理
 """
 
@@ -11,15 +12,10 @@ from pathlib import Path
 
 import yaml
 from openai import AsyncOpenAI
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
-EMBEDDING_MODEL_DIMS: dict[str, int] = {
-    "text-embedding-3-small": 1536,
-    "text-embedding-3-large": 3072,
-    "text-embedding-ada-002": 1536,
-}
-
-VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+from duckkb.constants import EMBEDDING_MODEL_DIMS, VALID_LOG_LEVELS
+from duckkb.ontology import Ontology
 
 
 class GlobalConfig(BaseModel):
@@ -36,24 +32,22 @@ class GlobalConfig(BaseModel):
     OPENAI_BASE_URL: str | None = None
 
 
-class KBConfig(BaseModel):
-    """知识库配置模型。
+class EmbeddingConfig(BaseModel):
+    """嵌入模型配置。
 
-    存储单个知识库的配置项，包括嵌入模型和日志设置。
+    存储嵌入模型相关配置。
 
     Attributes:
-        EMBEDDING_MODEL: 嵌入模型名称，默认为 text-embedding-3-small。
-        EMBEDDING_DIM: 嵌入向量维度，必须为 1536 或 3072。
-        LOG_LEVEL: 日志级别，默认为 INFO。
+        model: 嵌入模型名称，默认为 text-embedding-3-small。
+        dim: 嵌入向量维度，必须为 1536 或 3072。
     """
 
-    EMBEDDING_MODEL: str = "text-embedding-3-small"
-    EMBEDDING_DIM: int = 1536
-    LOG_LEVEL: str = "INFO"
+    model: str = "text-embedding-3-small"
+    dim: int = 1536
 
-    @field_validator("EMBEDDING_DIM")
+    @field_validator("dim")
     @classmethod
-    def validate_embedding_dim(cls, v: int) -> int:
+    def validate_dim(cls, v: int) -> int:
         """验证嵌入向量维度。
 
         Args:
@@ -66,14 +60,14 @@ class KBConfig(BaseModel):
             ValueError: 维度值无效时抛出。
         """
         if v <= 0:
-            raise ValueError("EMBEDDING_DIM must be positive")
+            raise ValueError("dim must be positive")
         if v not in [1536, 3072]:
-            raise ValueError("EMBEDDING_DIM must be 1536 or 3072 for OpenAI models")
+            raise ValueError("dim must be 1536 or 3072 for OpenAI models")
         return v
 
-    @field_validator("EMBEDDING_MODEL")
+    @field_validator("model")
     @classmethod
-    def validate_embedding_model(cls, v: str) -> str:
+    def validate_model(cls, v: str) -> str:
         """验证嵌入模型名称。
 
         Args:
@@ -86,10 +80,26 @@ class KBConfig(BaseModel):
             ValueError: 模型名称无效时抛出。
         """
         if v not in EMBEDDING_MODEL_DIMS:
-            raise ValueError(f"EMBEDDING_MODEL must be one of: {list(EMBEDDING_MODEL_DIMS.keys())}")
+            raise ValueError(f"model must be one of: {list(EMBEDDING_MODEL_DIMS.keys())}")
         return v
 
-    @field_validator("LOG_LEVEL")
+
+class KBConfig(BaseModel):
+    """知识库配置模型。
+
+    存储单个知识库的配置项，包括嵌入模型、日志设置和本体定义。
+
+    Attributes:
+        embedding: 嵌入模型配置。
+        log_level: 日志级别，默认为 INFO。
+        ontology: 本体定义。
+    """
+
+    embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
+    log_level: str = "INFO"
+    ontology: Ontology = Field(default_factory=Ontology)
+
+    @field_validator("log_level")
     @classmethod
     def validate_log_level(cls, v: str) -> str:
         """验证日志级别。
@@ -105,7 +115,7 @@ class KBConfig(BaseModel):
         """
         v_upper = v.upper()
         if v_upper not in VALID_LOG_LEVELS:
-            raise ValueError(f"LOG_LEVEL must be one of: {list(VALID_LOG_LEVELS)}")
+            raise ValueError(f"log_level must be one of: {list(VALID_LOG_LEVELS)}")
         return v_upper
 
     @classmethod
@@ -123,12 +133,31 @@ class KBConfig(BaseModel):
             with open(config_path, encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
             embedding_config = data.get("embedding", {})
+            ontology_config = data.get("ontology", {})
             return cls(
-                EMBEDDING_MODEL=embedding_config.get("model", "text-embedding-3-small"),
-                EMBEDDING_DIM=embedding_config.get("dim", 1536),
-                LOG_LEVEL=data.get("log_level", "INFO"),
+                embedding=EmbeddingConfig(
+                    model=embedding_config.get("model", "text-embedding-3-small"),
+                    dim=embedding_config.get("dim", 1536),
+                ),
+                log_level=data.get("log_level", "INFO"),
+                ontology=Ontology(**ontology_config) if ontology_config else Ontology(),
             )
         return cls()
+
+    @property
+    def EMBEDDING_MODEL(self) -> str:
+        """兼容旧代码的嵌入模型名称属性。"""
+        return self.embedding.model
+
+    @property
+    def EMBEDDING_DIM(self) -> int:
+        """兼容旧代码的嵌入维度属性。"""
+        return self.embedding.dim
+
+    @property
+    def LOG_LEVEL(self) -> str:
+        """兼容旧代码的日志级别属性。"""
+        return self.log_level
 
 
 class AppContext:

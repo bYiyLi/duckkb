@@ -85,7 +85,7 @@ async def test_full_flow(mock_kb_path, mock_embedding):
     temp_file.write_text('{"id": "3", "name": "Charlie"}', encoding="utf-8")
 
     res = await validate_and_import("users", temp_file)
-    assert "imported 1 records" in res
+    assert "success" in res
 
     # Check if users.jsonl has 3 lines now
     final_content = (data_dir / "users.jsonl").read_text(encoding="utf-8")

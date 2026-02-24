@@ -1,6 +1,5 @@
 import pytest
 
-from duckkb.config import AppContext
 from duckkb.constants import SYS_CACHE_TABLE
 from duckkb.db import get_db
 from duckkb.engine.cache import _execute_gc, clean_cache

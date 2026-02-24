@@ -7,6 +7,7 @@ import orjson
 from duckkb.config import get_kb_config
 from duckkb.constants import QUERY_DEFAULT_LIMIT, QUERY_RESULT_SIZE_LIMIT
 from duckkb.db import get_db
+from duckkb.exceptions import DatabaseError
 from duckkb.logger import logger
 from duckkb.utils.embedding import get_embedding
 
@@ -200,7 +201,7 @@ async def query_raw_sql(sql: str) -> list[dict[str, Any]]:
     ]
     forbidden_pattern = r"\b(" + "|".join(forbidden) + r")\b"
     if re.search(forbidden_pattern, sql_upper):
-        raise ValueError("Forbidden keyword in SQL query.")
+        raise DatabaseError("Forbidden keyword in SQL query.")
 
     if "SELECT" in sql_upper and not re.search(r"\bLIMIT\s+\d+", sql_upper):
         sql += f" LIMIT {QUERY_DEFAULT_LIMIT}"

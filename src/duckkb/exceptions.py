@@ -39,3 +39,47 @@ class SyncError(DuckKBError):
     """
 
     pass
+
+
+class ValidationError(DuckKBError):
+    """验证相关异常。
+
+    当数据验证失败时抛出，如文件格式错误、字段缺失等。
+    """
+
+    pass
+
+
+class TableNotFoundError(DuckKBError):
+    """表不存在异常。
+
+    当尝试操作不存在的表时抛出。
+    """
+
+    def __init__(self, table_name: str):
+        self.table_name = table_name
+        super().__init__(f"Table '{table_name}' not found")
+
+
+class RecordNotFoundError(DuckKBError):
+    """记录不存在异常。
+
+    当尝试删除或更新不存在的记录时抛出。
+    """
+
+    def __init__(self, table_name: str, record_ids: list[str]):
+        self.table_name = table_name
+        self.record_ids = record_ids
+        super().__init__(f"Records {record_ids} not found in table '{table_name}'")
+
+
+class InvalidTableNameError(DuckKBError):
+    """无效表名异常。
+
+    当表名不符合命名规范时抛出。
+    """
+
+    def __init__(self, table_name: str, reason: str):
+        self.table_name = table_name
+        self.reason = reason
+        super().__init__(f"Invalid table name '{table_name}': {reason}")

@@ -5,7 +5,13 @@
 - 查询限制
 - 缓存配置
 - 错误反馈设置
+- 嵌入模型配置
+- 日志级别配置
 """
+
+import re
+
+from duckkb.exceptions import InvalidTableNameError
 
 DEFAULT_KB_DIR_NAME = "knowledge-bases"
 DATA_DIR_NAME = "data"
@@ -21,3 +27,40 @@ QUERY_DEFAULT_LIMIT = 1000
 CACHE_EXPIRE_DAYS = 30
 
 MAX_ERROR_FEEDBACK = 5
+
+EMBEDDING_MODEL_DIMS: dict[str, int] = {
+    "text-embedding-3-small": 1536,
+    "text-embedding-3-large": 3072,
+    "text-embedding-ada-002": 1536,
+}
+
+VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+
+TABLE_NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+
+def validate_table_name(table_name: str) -> str:
+    """验证表名是否安全。
+
+    表名必须以字母或下划线开头，只能包含字母、数字和下划线。
+    这是为了防止 SQL 注入攻击。
+
+    Args:
+        table_name: 待验证的表名。
+
+    Returns:
+        验证通过的表名。
+
+    Raises:
+        InvalidTableNameError: 表名格式不安全时抛出。
+    """
+    if not table_name:
+        raise InvalidTableNameError(table_name, "Table name cannot be empty")
+    if not TABLE_NAME_PATTERN.match(table_name):
+        raise InvalidTableNameError(
+            table_name,
+            "must start with letter or underscore, and contain only alphanumeric characters and underscores",
+        )
+    if len(table_name) > 64:
+        raise InvalidTableNameError(table_name, "too long (max 64 characters)")
+    return table_name

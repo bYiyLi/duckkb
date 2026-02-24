@@ -1,10 +1,10 @@
 import pytest
 
-from duckkb.engine.sync import _bulk_insert, _read_records
-from duckkb.engine.importer import validate_and_import
-
 from duckkb.constants import SYS_SEARCH_TABLE
 from duckkb.db import get_db
+from duckkb.engine.importer import validate_and_import
+from duckkb.engine.sync import _bulk_insert, _read_records
+from duckkb.exceptions import ValidationError
 from duckkb.schema import init_schema
 
 
@@ -58,7 +58,7 @@ class TestIndexer:
         temp_file = mock_kb_path / "temp.jsonl"
         temp_file.write_text('{"name": "NoId"}', encoding="utf-8")
 
-        with pytest.raises(ValueError, match="Missing required field 'id'"):
+        with pytest.raises(ValidationError, match="Missing required field 'id'"):
             await validate_and_import("test", temp_file)
 
     @pytest.mark.asyncio
@@ -68,7 +68,7 @@ class TestIndexer:
         temp_file = mock_kb_path / "temp.jsonl"
         temp_file.write_text('{"id": "1"}\nnot json', encoding="utf-8")
 
-        with pytest.raises(ValueError, match="Invalid JSON format"):
+        with pytest.raises(ValidationError, match="Invalid JSON format"):
             await validate_and_import("test", temp_file)
 
     @pytest.mark.asyncio
@@ -78,7 +78,7 @@ class TestIndexer:
         temp_file = mock_kb_path / "temp.jsonl"
         temp_file.write_text('["not", "an", "object"]', encoding="utf-8")
 
-        with pytest.raises(ValueError, match="must be a JSON object"):
+        with pytest.raises(ValidationError, match="must be a JSON object"):
             await validate_and_import("test", temp_file)
 
     @pytest.mark.asyncio

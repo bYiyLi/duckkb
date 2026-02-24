@@ -5,14 +5,17 @@ from pathlib import Path
 
 import orjson
 
-from duckkb.constants import BUILD_DIR_NAME, DATA_DIR_NAME, SYS_SEARCH_TABLE
+from duckkb.constants import BUILD_DIR_NAME, DATA_DIR_NAME, SYS_SEARCH_TABLE, validate_table_name
 from duckkb.db import get_db
 from duckkb.engine.cache import clean_cache
+from duckkb.exceptions import InvalidTableNameError
 from duckkb.logger import logger
 from duckkb.utils.embedding import get_embeddings
 from duckkb.utils.text import compute_text_hash, segment_text
 
 SYNC_STATE_FILE = "sync_state.json"
+
+type SearchRow = tuple[str, str, str, str, str, str, float]
 
 
 async def sync_knowledge_base(kb_path: Path):
@@ -36,12 +39,19 @@ async def sync_knowledge_base(kb_path: Path):
     sync_state = {}
     if state_file.exists():
         try:
-            sync_state = orjson.loads(state_file.read_bytes())
+            sync_state_bytes = await asyncio.to_thread(state_file.read_bytes)
+            sync_state = orjson.loads(sync_state_bytes)
         except (orjson.JSONDecodeError, OSError) as e:
             logger.warning(f"Failed to load sync state, resetting: {e}")
 
     for file_path in data_dir.glob("*.jsonl"):
         table_name = file_path.stem
+        try:
+            validate_table_name(table_name)
+        except InvalidTableNameError as e:
+            logger.error(f"Invalid table name: {e}")
+            continue
+
         mtime = file_path.stat().st_mtime
 
         if sync_state.get(table_name) == mtime:
@@ -57,7 +67,7 @@ async def sync_knowledge_base(kb_path: Path):
             logger.error(f"Failed to sync {table_name}: {e}")
 
     state_file.parent.mkdir(parents=True, exist_ok=True)
-    state_file.write_bytes(orjson.dumps(sync_state))
+    await asyncio.to_thread(state_file.write_bytes, orjson.dumps(sync_state))
 
     try:
         with get_db(read_only=False) as conn:
@@ -150,7 +160,7 @@ async def _process_file(file_path: Path, table_name: str):
         await asyncio.to_thread(_bulk_insert, table_name, rows_to_insert)
 
 
-def _bulk_insert(table_name: str, rows: list[tuple[str, str, str, str, str, str, float]]):
+def _bulk_insert(table_name: str, rows: list[SearchRow]):
     """批量插入数据到搜索表。"""
     with get_db(read_only=False) as conn:
         conn.execute("BEGIN TRANSACTION")

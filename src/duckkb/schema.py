@@ -2,7 +2,7 @@
 
 本模块负责数据库模式的初始化和元信息查询，包括：
 - 系统表（搜索表、缓存表）的 DDL 定义
-- 用户自定义模式的加载
+- 本体定义的用户表 DDL 生成
 - ER 图生成
 """
 
@@ -13,6 +13,7 @@ from duckkb.config import AppContext
 from duckkb.constants import SCHEMA_FILE_NAME, SYS_CACHE_TABLE, SYS_SEARCH_TABLE
 from duckkb.db import get_async_db
 from duckkb.logger import logger
+from duckkb.ontology import generate_nodes_ddl
 
 
 def get_sys_schema_ddl(embedding_dim: int) -> str:
@@ -154,7 +155,7 @@ def _generate_mermaid_er(tables: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _get_kb_readme() -> str:
+async def _get_kb_readme() -> str:
     """读取知识库 README.md 内容（如果存在）。
 
     Returns:
@@ -163,9 +164,9 @@ def _get_kb_readme() -> str:
     readme_path = AppContext.get().kb_path / "README.md"
     if readme_path.exists():
         try:
-            content = readme_path.read_text(encoding="utf-8").strip()
+            content = await asyncio.to_thread(readme_path.read_text, encoding="utf-8")
             if content:
-                return f"\n\n## Knowledge Base README\n\n{content}\n"
+                return f"\n\n## Knowledge Base README\n\n{content.strip()}\n"
         except Exception as e:
             logger.warning(f"Failed to read README.md: {e}")
     return ""
@@ -174,7 +175,8 @@ def _get_kb_readme() -> str:
 async def init_schema():
     """初始化数据库模式。
 
-    创建系统表并应用用户自定义的 schema.sql（如果存在）。
+    创建系统表并根据本体定义创建用户表。
+    如果本体定义为空，则尝试加载 schema.sql 作为备选。
     """
     logger.info("Initializing schema...")
     kb_config = AppContext.get().kb_config
@@ -184,20 +186,32 @@ async def init_schema():
         await asyncio.to_thread(conn.execute, sys_schema_ddl)
         logger.debug("System tables ensured.")
 
-        schema_path = AppContext.get().kb_path / SCHEMA_FILE_NAME
-        if schema_path.exists():
-            logger.info(f"Applying schema from {schema_path}")
-            schema_sql = await asyncio.to_thread(schema_path.read_text, encoding="utf-8")
-            try:
-                await asyncio.to_thread(conn.execute, schema_sql)
-            except Exception as e:
-                logger.error(f"Failed to apply schema.sql: {e}")
-                raise
+        ontology = kb_config.ontology
+        if ontology.nodes:
+            logger.info(f"Creating tables from ontology: {list(ontology.nodes.keys())}")
+            nodes_ddl = generate_nodes_ddl(ontology)
+            if nodes_ddl:
+                try:
+                    await asyncio.to_thread(conn.execute, nodes_ddl)
+                    logger.debug("Ontology tables created.")
+                except Exception as e:
+                    logger.error(f"Failed to create ontology tables: {e}")
+                    raise
         else:
-            logger.warning(f"No {SCHEMA_FILE_NAME} found in {AppContext.get().kb_path}")
+            schema_path = AppContext.get().kb_path / SCHEMA_FILE_NAME
+            if schema_path.exists():
+                logger.info(f"Applying schema from {schema_path}")
+                schema_sql = await asyncio.to_thread(schema_path.read_text, encoding="utf-8")
+                try:
+                    await asyncio.to_thread(conn.execute, schema_sql)
+                except Exception as e:
+                    logger.error(f"Failed to apply schema.sql: {e}")
+                    raise
+            else:
+                logger.debug("No ontology or schema.sql defined, skipping user tables.")
 
 
-def get_schema_info() -> str:
+async def get_schema_info() -> str:
     """获取模式定义信息，包含 Mermaid ER 图和知识库 README。
 
     Returns:
@@ -207,15 +221,20 @@ def get_schema_info() -> str:
     kb_config = AppContext.get().kb_config
     sys_schema_ddl = get_sys_schema_ddl(kb_config.EMBEDDING_DIM)
 
-    schema_path = AppContext.get().kb_path / SCHEMA_FILE_NAME
-    user_schema = ""
-    if schema_path.exists():
-        user_schema = schema_path.read_text(encoding="utf-8")
-        parts.append(f"-- User Schema ({SCHEMA_FILE_NAME})\n{user_schema}\n")
+    ontology = kb_config.ontology
+    if ontology.nodes:
+        nodes_ddl = generate_nodes_ddl(ontology)
+        if nodes_ddl:
+            parts.append(f"-- Ontology Schema\n{nodes_ddl}\n")
+    else:
+        schema_path = AppContext.get().kb_path / SCHEMA_FILE_NAME
+        if schema_path.exists():
+            user_schema = await asyncio.to_thread(schema_path.read_text, encoding="utf-8")
+            parts.append(f"-- User Schema ({SCHEMA_FILE_NAME})\n{user_schema}\n")
 
     parts.append(f"-- System Schema\n{sys_schema_ddl}\n")
 
-    all_sql = user_schema + "\n" + sys_schema_ddl
+    all_sql = "\n".join(parts)
     tables = _parse_table_definitions(all_sql)
 
     if tables:
@@ -223,7 +242,7 @@ def get_schema_info() -> str:
         if er_diagram:
             parts.append("\n## ER Diagram\n\n" + er_diagram + "\n")
 
-    readme_content = _get_kb_readme()
+    readme_content = await _get_kb_readme()
     if readme_content:
         parts.append(readme_content)
 

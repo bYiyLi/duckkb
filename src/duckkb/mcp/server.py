@@ -10,7 +10,8 @@ DuckKB MCP 服务模块
 - get_schema_info: 获取数据库模式定义和 ER 图信息
 - smart_search: 智能混合搜索（向量 + 元数据）
 - query_raw_sql: 执行只读 SQL 查询
-- validate_and_import: 验证并导入数据文件
+- validate_and_import: 验证并导入数据文件（upsert 语义）
+- delete_records: 删除指定表中的记录
 """
 
 import json
@@ -20,10 +21,11 @@ from fastmcp import FastMCP
 
 from duckkb.config import AppContext
 from duckkb.constants import BUILD_DIR_NAME, DATA_DIR_NAME, DB_FILE_NAME
-from duckkb.engine.sync import sync_knowledge_base as _sync
+from duckkb.engine.deleter import delete_records as _delete_records
 from duckkb.engine.importer import validate_and_import as _validate
 from duckkb.engine.searcher import query_raw_sql as _query
 from duckkb.engine.searcher import smart_search as _search
+from duckkb.engine.sync import sync_knowledge_base as _sync
 from duckkb.schema import get_schema_info as _get_schema_info
 
 mcp = FastMCP("DuckKB")
@@ -76,7 +78,7 @@ async def sync_knowledge_base() -> str:
 
 
 @mcp.tool()
-def get_schema_info() -> str:
+async def get_schema_info() -> str:
     """
     获取数据库模式信息。
 
@@ -86,7 +88,7 @@ def get_schema_info() -> str:
     Returns:
         str: 数据库模式的详细描述，包含表结构和 ER 图信息。
     """
-    return _get_schema_info()
+    return await _get_schema_info()
 
 
 @mcp.tool()
@@ -138,22 +140,45 @@ async def query_raw_sql(sql: str) -> str:
 @mcp.tool()
 async def validate_and_import(table_name: str, temp_file_path: str) -> str:
     """
-    验证并导入数据文件。
+    验证并导入数据文件（upsert 语义）。
 
-    验证临时 JSONL 文件的格式和内容，验证通过后将其移动到数据目录。
-    此操作用于安全地导入新数据到知识库。
+    验证临时 JSONL 文件的格式和内容，验证通过后将其导入到数据目录。
+    如果目标表已存在，基于 id 字段进行 upsert（更新已存在的记录，插入新记录）。
+    如果目标表不存在，创建新表。
 
     Args:
         table_name: 目标表名（不含 .jsonl 扩展名）。
                    文件将被命名为 {table_name}.jsonl。
         temp_file_path: 临时 JSONL 文件的绝对路径。
-                       文件必须符合知识库的数据格式规范。
+                       文件必须符合知识库的数据格式规范，每条记录必须包含 id 字段。
 
     Returns:
-        str: 操作结果消息，包含导入状态和详细信息。
+        str: JSON 格式的操作结果，包含更新/插入统计。
 
     Raises:
         ValueError: 当文件格式不正确或验证失败时抛出。
         FileNotFoundError: 当临时文件不存在时抛出。
     """
     return await _validate(table_name, Path(temp_file_path))
+
+
+@mcp.tool()
+async def delete_records(table_name: str, record_ids: list[str]) -> str:
+    """
+    删除指定表中的记录。
+
+    从知识库中删除指定的记录，包括 JSONL 数据文件和数据库索引。
+
+    Args:
+        table_name: 目标表名（不含 .jsonl 扩展名）。
+        record_ids: 要删除的记录 ID 列表。
+
+    Returns:
+        str: JSON 格式的删除结果，包含删除统计和未找到的 ID 列表。
+
+    Raises:
+        ValueError: 当参数无效时抛出。
+        FileNotFoundError: 当表不存在时抛出。
+    """
+    result = await _delete_records(table_name, record_ids)
+    return json.dumps(result, ensure_ascii=False)
