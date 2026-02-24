@@ -1,5 +1,5 @@
 import asyncio
-import sys
+import re
 from typing import Any
 
 import orjson
@@ -11,7 +11,10 @@ from duckkb.utils.embedding import get_embedding
 
 
 async def smart_search(
-    query: str, limit: int = 10, table_filter: str | None = None
+    query: str,
+    limit: int = 10,
+    table_filter: str | None = None,
+    alpha: float = 0.5,
 ) -> list[dict[str, Any]]:
     """
     Perform a hybrid search (Vector Search + Metadata).
@@ -20,9 +23,15 @@ async def smart_search(
         query: The search query string.
         limit: Max results to return.
         table_filter: Optional filter for source_table.
+        alpha: Weight for vector search (0.0 to 1.0). Default 0.5.
     """
     if not query:
         return []
+
+    # Clamp alpha
+    alpha = max(0.0, min(1.0, alpha))
+    vector_w = alpha
+    text_w = 1.0 - alpha
 
     # Generate query embedding
     try:
@@ -54,7 +63,7 @@ async def smart_search(
             WHERE 1=1 {filter_clause}
             ORDER BY score DESC LIMIT ?
         )"""
-        
+
         # 2. Text Search CTE
         # Using FTS macro fts_main__sys_search.match_bm25(key, query)
         text_cte = f"""
@@ -67,15 +76,15 @@ async def smart_search(
             {filter_clause}
             ORDER BY score DESC LIMIT ?
         )"""
-        
+
         # Combined SQL
         sql = f"""
         WITH {vector_cte},
         {text_cte},
         combined AS (
-            SELECT rowid, score * 0.6 as score FROM vector_search
+            SELECT rowid, score * ? as score FROM vector_search
             UNION ALL
-            SELECT rowid, score * 0.4 as score FROM text_search
+            SELECT rowid, score * ? as score FROM text_search
         )
         SELECT 
             s.ref_id, 
@@ -90,25 +99,29 @@ async def smart_search(
         ORDER BY final_score DESC
         LIMIT ?
         """
-        
+
         # Parameters construction
         params = []
         # Vector params
         params.append(query_vec)
         params.extend(filter_params)
         params.append(limit * 2)
-        
+
         # Text params
         params.append(query)
         params.append(query)
         params.extend(filter_params)
         params.append(limit * 2)
-        
+
+        # Weight params
+        params.append(vector_w)
+        params.append(text_w)
+
         # Final params
         params.append(limit)
-        
+
         return await asyncio.to_thread(_execute_search, sql, params)
-        
+
     except Exception as e:
         logger.warning(f"Hybrid search failed, falling back to vector search: {e}")
         # Fallback to pure vector search
@@ -150,7 +163,7 @@ def _execute_search(sql: str, params: list) -> list[dict[str, Any]]:
                         metadata = orjson.loads(metadata)
                     except:
                         pass
-                
+
                 # Check for large result set (simple check)
                 # But search usually has LIMIT 10-20, so it's fine.
                 # The 2MB limit is mostly for raw SQL query.
@@ -178,15 +191,39 @@ async def query_raw_sql(sql: str) -> list[dict[str, Any]]:
     1. Read-only connection.
     2. Auto-limit.
     3. Result size limit (2MB).
+    4. Forbidden keywords.
     """
     # 1. Pre-check
     sql_upper = sql.upper()
 
-    # Basic protection against some non-selects (though read_only DB handles most)
-    # But user might run PRAGMA etc.
-    # Design says: "If no LIMIT and SELECT, append LIMIT 1000"
+    # Forbidden keywords
+    forbidden = [
+        "ATTACH",
+        "DETACH",
+        "PRAGMA",
+        "IMPORT",
+        "EXPORT",
+        "COPY",
+        "LOAD",
+        "INSTALL",
+        "VACUUM",
+        "DELETE",
+        "UPDATE",
+        "DROP",
+        "INSERT",
+        "ALTER",
+        "CREATE",
+        "TRUNCATE",
+        "BEGIN",
+        "COMMIT",
+        "ROLLBACK",
+    ]
+    forbidden_pattern = r"\b(" + "|".join(forbidden) + r")\b"
+    if re.search(forbidden_pattern, sql_upper):
+        raise ValueError("Forbidden keyword in SQL query.")
 
-    if "LIMIT" not in sql_upper and "SELECT" in sql_upper:
+    # Enforce LIMIT
+    if "SELECT" in sql_upper and not re.search(r"\bLIMIT\s+\d+", sql_upper):
         sql += " LIMIT 1000"
 
     return await asyncio.to_thread(_execute_raw, sql)
@@ -200,26 +237,28 @@ def _execute_raw(sql: str) -> list[dict[str, Any]]:
                 return []
             columns = [desc[0] for desc in cursor.description]
             rows = cursor.fetchall()
-            
+
             result = [dict(zip(columns, row)) for row in rows]
-            
+
             # Check result size (approximate via JSON serialization)
             try:
                 json_bytes = orjson.dumps(result)
                 if len(json_bytes) > 2 * 1024 * 1024:  # 2MB
-                    # Truncate or error? 
+                    # Truncate or error?
                     # Design doc says: "Query rate limiting: strictly control result set size within 2MB".
                     # It implies we should probably error or truncate.
                     # Let's try to truncate to be friendly.
                     # But we already fetched all.
                     # Let's just return error to force user to use LIMIT.
-                    raise ValueError("Result set size exceeds 2MB limit. Please add LIMIT or refine your query.")
+                    raise ValueError(
+                        "Result set size exceeds 2MB limit. Please add LIMIT or refine your query."
+                    )
             except ValueError as ve:
                 raise ve
             except Exception:
                 # If serialization fails, ignore (likely not JSON serializable, but that's another issue)
                 pass
-                
+
             return result
     except Exception as e:
         # Return detailed error as struct

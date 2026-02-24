@@ -19,60 +19,93 @@ def get_openai_client() -> AsyncOpenAI:
     return _client
 
 
-def _get_cached_embedding(content_hash: str) -> list[float] | None:
-    """Check if embedding exists in cache."""
+def _get_cached_embeddings_batch(hashes: list[str]) -> dict[str, list[float]]:
+    """Batch check if embeddings exist in cache."""
+    if not hashes:
+        return {}
     try:
         with get_db(read_only=True) as conn:
-            # Check if table exists first to avoid error during init
-            # Actually schema init should have run.
-            result = conn.execute(
-                f"SELECT embedding FROM {SYS_CACHE_TABLE} WHERE content_hash = ?", [content_hash]
-            ).fetchone()
-            if result:
-                return result[0]
+            # DuckDB supports list parameter for IN clause
+            query = f"SELECT content_hash, embedding FROM {SYS_CACHE_TABLE} WHERE content_hash IN ({','.join(['?'] * len(hashes))})"
+            results = conn.execute(query, hashes).fetchall()
+            return {r[0]: r[1] for r in results}
     except Exception as e:
-        logger.warning(f"Cache lookup failed: {e}")
-    return None
+        logger.warning(f"Batch cache lookup failed: {e}")
+        return {}
 
 
-def _cache_embedding(content_hash: str, embedding: list[float]):
-    """Store embedding in cache."""
+def _cache_embeddings_batch(hashes: list[str], embeddings: list[list[float]]):
+    """Batch store embeddings in cache."""
+    if not hashes:
+        return
     try:
+        data = []
+        now = datetime.now()
+        for h, emb in zip(hashes, embeddings):
+            data.append((h, emb, now))
+
         with get_db(read_only=False) as conn:
-            conn.execute(
+            conn.executemany(
                 f"INSERT OR REPLACE INTO {SYS_CACHE_TABLE} (content_hash, embedding, last_used) VALUES (?, ?, ?)",
-                [content_hash, embedding, datetime.now()],
+                data,
             )
     except Exception as e:
-        logger.error(f"Failed to cache embedding: {e}")
+        logger.error(f"Failed to batch cache embeddings: {e}")
+
+
+async def get_embeddings(texts: list[str]) -> list[list[float]]:
+    """Get embeddings for a list of texts using OpenAI with caching."""
+    if not texts:
+        return []
+
+    # Filter out empty strings to match index logic (though indexer usually filters before calling)
+    # But to keep indices aligned, we assume input texts are all valid.
+
+    # 1. Calculate hashes
+    hashes = [hashlib.md5(t.encode("utf-8")).hexdigest() for t in texts]
+
+    # 2. Check cache
+    cached_map = await asyncio.to_thread(_get_cached_embeddings_batch, hashes)
+
+    results: list[list[float] | None] = [None] * len(texts)
+    missing_indices = []
+    missing_texts = []
+
+    for i, h in enumerate(hashes):
+        if h in cached_map:
+            results[i] = cached_map[h]
+        else:
+            missing_indices.append(i)
+            missing_texts.append(texts[i])
+
+    if missing_texts:
+        logger.debug(f"Embedding cache miss: {len(missing_texts)}/{len(texts)}")
+        client = get_openai_client()
+        try:
+            # OpenAI API call
+            response = await client.embeddings.create(
+                input=missing_texts, model=settings.EMBEDDING_MODEL
+            )
+            new_embeddings = [d.embedding for d in response.data]
+
+            # 3. Store in cache
+            # Use hashes of missing texts
+            missing_hashes = [hashes[i] for i in missing_indices]
+            await asyncio.to_thread(_cache_embeddings_batch, missing_hashes, new_embeddings)
+
+            # Fill results
+            for idx, embedding in zip(missing_indices, new_embeddings):
+                results[idx] = embedding
+
+        except Exception as e:
+            logger.error(f"Failed to generate embeddings: {e}")
+            raise e
+
+    # Ensure all results are filled (should be unless exception raised)
+    return [r for r in results if r is not None]
 
 
 async def get_embedding(text: str) -> list[float]:
-    """Get embedding for a text string using OpenAI with caching."""
-    if not text or not text.strip():
-        return []
-
-    # Calculate hash
-    content_hash = hashlib.md5(text.encode("utf-8")).hexdigest()
-
-    # 1. Check cache
-    cached = await asyncio.to_thread(_get_cached_embedding, content_hash)
-    if cached:
-        logger.debug(f"Embedding cache hit: {content_hash[:8]}")
-        return cached
-
-    # 2. Call API
-    logger.debug(f"Embedding cache miss: {content_hash[:8]}")
-    client = get_openai_client()
-    try:
-        response = await client.embeddings.create(input=text, model=settings.EMBEDDING_MODEL)
-        embedding = response.data[0].embedding
-
-        # 3. Store in cache
-        await asyncio.to_thread(_cache_embedding, content_hash, embedding)
-        return embedding
-    except Exception as e:
-        logger.error(f"Failed to generate embedding: {e}")
-        # In case of error, we might want to return empty list or raise
-        # Raising is better so the caller knows it failed.
-        raise
+    """Wrapper for single text (backward compatibility)."""
+    res = await get_embeddings([text])
+    return res[0] if res else []

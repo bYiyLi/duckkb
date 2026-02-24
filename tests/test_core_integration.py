@@ -15,12 +15,26 @@ MOCK_EMBEDDING = [0.1] * 1536
 @pytest.fixture
 def mock_embedding():
     # Mock the OpenAI client to allow caching logic to run
+    
+    async def side_effect(*args, **kwargs):
+        input_data = kwargs.get("input", [])
+        if isinstance(input_data, str):
+            count = 1
+        else:
+            count = len(input_data)
+            
+        mock_response = AsyncMock()
+        mock_data_list = []
+        for _ in range(count):
+            d = AsyncMock()
+            d.embedding = MOCK_EMBEDDING
+            mock_data_list.append(d)
+        
+        mock_response.data = mock_data_list
+        return mock_response
+
     mock_client = AsyncMock()
-    mock_response = AsyncMock()
-    mock_data = AsyncMock()
-    mock_data.embedding = MOCK_EMBEDDING
-    mock_response.data = [mock_data]
-    mock_client.embeddings.create.return_value = mock_response
+    mock_client.embeddings.create.side_effect = side_effect
     
     with patch("duckkb.utils.embedding.get_openai_client", return_value=mock_client):
         yield

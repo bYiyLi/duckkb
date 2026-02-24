@@ -8,7 +8,7 @@ from duckkb.config import settings
 from duckkb.constants import BUILD_DIR_NAME, DATA_DIR_NAME, SYS_SEARCH_TABLE
 from duckkb.db import get_db
 from duckkb.logger import logger
-from duckkb.utils.embedding import get_embedding
+from duckkb.utils.embedding import get_embeddings
 from duckkb.utils.text import segment_text
 
 SYNC_STATE_FILE = "sync_state.json"
@@ -16,6 +16,9 @@ SYNC_STATE_FILE = "sync_state.json"
 
 async def sync_knowledge_base(kb_path: Path):
     """Sync the knowledge base from JSONL files to DuckDB."""
+    # Warmup jieba in main thread to avoid race conditions or lag in threads
+    segment_text("")
+
     data_dir = kb_path / DATA_DIR_NAME
     if not data_dir.exists():
         logger.warning(f"Data directory {data_dir} does not exist.")
@@ -85,8 +88,8 @@ def _execute_gc():
         conn.execute("DELETE FROM _sys_cache WHERE last_used < current_timestamp - INTERVAL 30 DAY")
 
 
-async def _process_file(file_path: Path, table_name: str):
-    # Read all records
+def _read_records(file_path: Path) -> list[dict]:
+    """Read and parse JSONL file."""
     records = []
     try:
         content = file_path.read_bytes()
@@ -96,47 +99,83 @@ async def _process_file(file_path: Path, table_name: str):
             records.append(orjson.loads(line))
     except Exception as e:
         raise ValueError(f"Failed to parse {file_path}: {e}")
+    return records
 
-    # Prepare data for insertion
-    rows_to_insert: list[tuple] = []
 
-    for record in records:
-        # Require 'id' field
+async def _process_file(file_path: Path, table_name: str):
+    # 1. Read all records asynchronously (I/O bound)
+    try:
+        records = await asyncio.to_thread(_read_records, file_path)
+    except Exception as e:
+        raise ValueError(f"Failed to read {file_path}: {e}")
+
+    # 2. Collect texts for embedding
+    # Format: (record_idx, field_key, text)
+    embedding_requests = []
+
+    for i, record in enumerate(records):
         ref_id = str(record.get("id", ""))
         if not ref_id:
             continue
 
-        # Serialize metadata once
+        for key, value in record.items():
+            if isinstance(value, str) and value.strip():
+                embedding_requests.append((i, key, value))
+
+    if not embedding_requests:
+        return
+
+    texts_to_embed = [req[2] for req in embedding_requests]
+
+    # 3. Batch Embedding (I/O bound, concurrency handled inside)
+    try:
+        embeddings = await get_embeddings(texts_to_embed)
+    except Exception as e:
+        logger.error(f"Failed to get embeddings for {table_name}: {e}")
+        # If embedding fails completely, we skip the file to avoid partial state?
+        # Or just return, meaning no rows inserted.
+        return
+
+    # 4. Parallel Segmentation (CPU bound)
+    # Use default executor (ThreadPool) which releases GIL for many C-extensions
+    # jieba is pure python but might be slow. ProcessPool is better for CPU bound
+    # but requires pickling and overhead. ThreadPool is a good start.
+    loop = asyncio.get_running_loop()
+    try:
+        segmented_texts = await asyncio.gather(
+            *[loop.run_in_executor(None, segment_text, text) for text in texts_to_embed]
+        )
+    except Exception as e:
+        logger.error(f"Failed to segment text: {e}")
+        return
+
+    # 5. Assemble Rows
+    rows_to_insert: list[tuple] = []
+
+    for idx, (original_idx, key, text) in enumerate(embedding_requests):
+        record = records[original_idx]
+        ref_id = str(record.get("id", ""))
+
+        # Check if embedding exists (it should match index)
+        if idx >= len(embeddings) or not embeddings[idx]:
+            continue
+
+        embedding_id = hashlib.md5(text.encode("utf-8")).hexdigest()
         metadata_json = orjson.dumps(record).decode("utf-8")
 
-        for key, value in record.items():
-            # Index all non-empty strings
-            if isinstance(value, str) and value.strip():
-                # Generate embedding (cached)
-                try:
-                    embedding = await get_embedding(value)
-                    if not embedding:
-                        continue
-                except Exception as e:
-                    logger.warning(f"Skipping field {key} due to embedding error: {e}")
-                    continue
+        rows_to_insert.append(
+            (
+                ref_id,
+                table_name,
+                key,
+                segmented_texts[idx],
+                embedding_id,
+                metadata_json,
+                1.0,  # priority
+            )
+        )
 
-                content_hash = hashlib.md5(value.encode("utf-8")).hexdigest()
-                segmented = segment_text(value)
-
-                rows_to_insert.append(
-                    (
-                        ref_id,
-                        table_name,
-                        key,
-                        segmented,
-                        content_hash,  # embedding_id
-                        metadata_json,
-                        1.0,  # priority
-                    )
-                )
-
-    # Bulk insert into DB
+    # 6. Bulk Insert
     if rows_to_insert:
         await asyncio.to_thread(_bulk_insert, table_name, rows_to_insert)
 
@@ -174,7 +213,7 @@ async def validate_and_import(table_name: str, temp_file_path: Path) -> str:
     valid_count = 0
 
     try:
-        content = temp_file_path.read_bytes()
+        content = await asyncio.to_thread(temp_file_path.read_bytes)
         lines = content.splitlines()
 
         for i, line in enumerate(lines, 1):
@@ -213,17 +252,17 @@ async def validate_and_import(table_name: str, temp_file_path: Path) -> str:
         # Atomic Merge: Read existing -> Append new -> Write temp -> Rename
         final_content = b""
         if target_path.exists():
-            final_content = target_path.read_bytes()
+            final_content = await asyncio.to_thread(target_path.read_bytes)
             if final_content and not final_content.endswith(b"\n"):
                 final_content += b"\n"
 
         # temp_file_path already validated
-        new_content = temp_file_path.read_bytes()
+        new_content = await asyncio.to_thread(temp_file_path.read_bytes)
         final_content += new_content
 
         # Write to a staging file in target dir to ensure same filesystem for atomic rename
         staging_path = target_path.with_suffix(".jsonl.staging")
-        staging_path.write_bytes(final_content)
+        await asyncio.to_thread(staging_path.write_bytes, final_content)
 
         # Atomic rename
         staging_path.replace(target_path)

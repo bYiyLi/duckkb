@@ -47,12 +47,22 @@ def get_schema_info() -> str:
 
 
 @mcp.tool()
-async def smart_search(query: str, limit: int = 10, table_filter: str | None = None) -> str:
+async def smart_search(
+    query: str, 
+    limit: int = 10, 
+    table_filter: str | None = None,
+    alpha: float = 0.5
+) -> str:
     """
     Perform a hybrid search (Vector + Metadata).
+    Args:
+        query: The search query string.
+        limit: Max results to return.
+        table_filter: Optional filter for source_table.
+        alpha: Weight for vector search (0.0 to 1.0). Default 0.5.
     Returns JSON string of results.
     """
-    results = await _search(query, limit, table_filter)
+    results = await _search(query, limit, table_filter, alpha)
     return json.dumps(results, ensure_ascii=False, default=str)
 
 
