@@ -7,6 +7,7 @@
 - 错误反馈设置
 - 嵌入模型配置
 - 日志级别配置
+- 类型别名定义
 """
 
 import re
@@ -52,6 +53,8 @@ DEFAULT_METRIC = "cosine"
 VALID_CARDINALITIES = {"1:1", "1:N", "N:1", "N:N"}
 
 TABLE_NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+type SearchRow = tuple[str, str, str, str, str, list[float], str, float]
 
 
 def validate_table_name(table_name: str) -> str:

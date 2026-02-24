@@ -8,6 +8,7 @@
 import asyncio
 from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager
+from pathlib import Path
 
 import duckdb
 
@@ -25,7 +26,7 @@ class DBManager:
         db_path: 数据库文件的完整路径。
     """
 
-    def __init__(self, kb_path) -> None:
+    def __init__(self, kb_path: Path) -> None:
         """初始化数据库管理器。
 
         Args:
@@ -52,7 +53,6 @@ class DBManager:
         except Exception as e:
             # Might fail if read-only or extension issues, but we try best effort
             logger.warning(f"Failed to load vss extension: {e}")
-
 
         return conn
 

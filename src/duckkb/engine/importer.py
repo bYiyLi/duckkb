@@ -37,7 +37,7 @@ async def validate_and_import_file(table_name: str, temp_file_path: str) -> str:
 
     BATCH_SIZE = 100
     errors = []
-    
+
     # Get schema for validation
     ctx = AppContext.get()
     schema = None
@@ -53,7 +53,7 @@ async def validate_and_import_file(table_name: str, temp_file_path: str) -> str:
             line_num += 1
             if not line.strip():
                 continue
-            
+
             if len(errors) >= MAX_ERROR_FEEDBACK:
                 break
 
@@ -65,7 +65,7 @@ async def validate_and_import_file(table_name: str, temp_file_path: str) -> str:
                 if "id" not in record:
                     errors.append(f"Line {line_num}: Missing required field 'id'")
                     continue
-                
+
                 # Schema validation
                 if schema and "required" in schema:
                     missing = [f for f in schema["required"] if f not in record]
@@ -74,7 +74,7 @@ async def validate_and_import_file(table_name: str, temp_file_path: str) -> str:
                         continue
             except orjson.JSONDecodeError:
                 errors.append(f"Line {line_num}: Invalid JSON format")
-                
+
     except Exception as e:
         raise ValueError(f"Failed to read file during validation: {e}") from e
 
@@ -87,40 +87,42 @@ async def validate_and_import_file(table_name: str, temp_file_path: str) -> str:
     # Pass 2: Import
     total_upserted = 0
     buffer = []
-    
+
     try:
         async for line in read_file_lines(path):
             if not line.strip():
                 continue
-            
+
             record = orjson.loads(line)
             buffer.append(record)
-            
+
             if len(buffer) >= BATCH_SIZE:
                 res = await add_documents(table_name, buffer, sync_file=False)
                 total_upserted += res.get("upserted_count", 0)
                 buffer = []
-        
+
         # Process remaining
         if buffer:
             res = await add_documents(table_name, buffer, sync_file=False)
             total_upserted += res.get("upserted_count", 0)
-            
+
         # Final sync
         await sync_db_to_file(table_name)
-        
+
     except Exception as e:
         raise ValueError(f"Failed to import data: {e}") from e
     finally:
-        # Cleanup temp file
         try:
             await unlink(path)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to cleanup temp file: {e}")
 
-    return json.dumps({
-        "status": "success",
-        "table_name": table_name,
-        "upserted_count": total_upserted,
-        "message": f"Successfully upserted {total_upserted} records"
-    }, ensure_ascii=False)
+    return json.dumps(
+        {
+            "status": "success",
+            "table_name": table_name,
+            "upserted_count": total_upserted,
+            "message": f"Successfully upserted {total_upserted} records",
+        },
+        ensure_ascii=False,
+    )

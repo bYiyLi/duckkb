@@ -7,16 +7,13 @@ import asyncio
 
 import orjson
 
-from duckkb.constants import SYS_SEARCH_TABLE, validate_table_name
+from duckkb.constants import SYS_SEARCH_TABLE, SearchRow, validate_table_name
 from duckkb.db import get_db
 from duckkb.engine.deleter import delete_records_from_db
 from duckkb.engine.sync import sync_db_to_file
 from duckkb.logger import logger
 from duckkb.utils.embedding import get_embeddings
 from duckkb.utils.text import compute_text_hash, segment_text
-
-# (ref_id, source_table, source_field, segmented_text, embedding_id, embedding, metadata, priority_weight)
-type SearchRow = tuple[str, str, str, str, str, list[float], str, float]
 
 
 async def add_documents(table_name: str, records: list[dict], sync_file: bool = True) -> dict:
@@ -121,6 +118,17 @@ async def add_documents(table_name: str, records: list[dict], sync_file: bool = 
 
 
 def _insert_rows(rows: list[SearchRow]):
-    """批量插入 DB 记录。"""
+    """批量插入 DB 记录。
+
+    使用事务包装以提高性能。
+    """
     with get_db(read_only=False) as conn:
-        conn.executemany(f"INSERT INTO {SYS_SEARCH_TABLE} VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows)
+        conn.begin()
+        try:
+            conn.executemany(
+                f"INSERT INTO {SYS_SEARCH_TABLE} VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise

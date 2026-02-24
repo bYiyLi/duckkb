@@ -1,4 +1,7 @@
-"""知识库缓存管理模块。"""
+"""知识库缓存管理模块。
+
+提供向量嵌入缓存的清理功能，防止缓存表无限增长。
+"""
 
 import asyncio
 
@@ -8,8 +11,7 @@ from duckkb.logger import logger
 
 
 async def clean_cache():
-    """
-    清理过期的向量缓存条目。
+    """清理过期的向量缓存条目。
 
     删除超过 CACHE_EXPIRE_DAYS 天未使用的缓存记录，
     防止缓存表无限增长。

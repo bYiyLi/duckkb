@@ -118,7 +118,8 @@ class MigrationManager:
                     f"SELECT DISTINCT source_table FROM {SYS_SEARCH_TABLE}"
                 ).fetchall()
             return [row[0] for row in rows]
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to get table names: {e}")
             return []
 
     def analyze_changes(self, new_ontology: Ontology) -> dict[str, Any]:

@@ -16,6 +16,7 @@ DuckKB MCP 服务模块
 - restore_backup: 从备份恢复知识库
 """
 
+import asyncio
 import json
 from collections.abc import AsyncGenerator
 from pathlib import Path
@@ -36,7 +37,7 @@ from duckkb.engine.sync import sync_knowledge_base as _sync
 from duckkb.logger import logger
 from duckkb.schema import get_schema_info as _get_schema_info
 from duckkb.schema import init_schema
-from duckkb.utils.file_ops import file_exists, glob_files
+from duckkb.utils.file_ops import file_exists, glob_files, read_file
 from duckkb.utils.text import init_jieba_async
 
 
@@ -165,7 +166,7 @@ async def sync_knowledge_base(
 
         content = await read_file(path)
         migration_manager = MigrationManager(ctx.kb_path)
-        
+
         # Run migration in a separate thread to avoid blocking
         result = await asyncio.to_thread(migration_manager.migrate, content, force=force)
         return json.dumps(result.to_dict(), ensure_ascii=False)

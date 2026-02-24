@@ -85,7 +85,7 @@ async def test_file_exists(tmp_path):
 
     test_file.touch()
     assert await file_exists(test_file)
-    
+
     # Directory should return False for file_exists
     assert not await file_exists(tmp_path)
 
@@ -98,7 +98,7 @@ async def test_dir_exists(tmp_path):
 
     test_dir.mkdir()
     assert await dir_exists(test_dir)
-    
+
     # File should return False for dir_exists
     test_file = tmp_path / "file.txt"
     test_file.touch()
@@ -115,7 +115,7 @@ async def test_glob_files(tmp_path):
 
     pattern = str(tmp_path / "*.txt")
     files = await glob_files(pattern)
-    
+
     assert len(files) == 2
     assert str(tmp_path / "a.txt") in files
     assert str(tmp_path / "b.txt") in files

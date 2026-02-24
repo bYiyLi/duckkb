@@ -205,9 +205,8 @@ async def init_schema():
                 conn.execute(
                     f"ALTER TABLE {SYS_SEARCH_TABLE} ADD COLUMN embedding FLOAT[{kb_config.EMBEDDING_DIM}]"
                 )
-        except Exception:
-            # Table might not exist yet, which is fine
-            pass
+        except Exception as e:
+            logger.debug(f"Schema migration check skipped: {e}")
 
         await asyncio.to_thread(conn.execute, sys_schema_ddl)
         logger.debug("System tables ensured.")

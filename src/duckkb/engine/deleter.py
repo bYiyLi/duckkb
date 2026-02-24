@@ -1,7 +1,6 @@
-"""Deleter module for DuckKB.
+"""文档删除模块。
 
-This module handles deletion of documents from the knowledge base,
-ensuring consistency between the database and the file system.
+本模块处理知识库中文档的删除操作，确保数据库和文件系统的一致性。
 """
 
 import asyncio
@@ -11,11 +10,11 @@ from duckkb.db import get_db
 
 
 def delete_records_from_db(table_name: str, ids: list[str]) -> None:
-    """Deletes records from the database by ID.
+    """从数据库中删除指定 ID 的记录。
 
     Args:
-        table_name: The name of the table.
-        ids: A list of record IDs to delete.
+        table_name: 表名。
+        ids: 要删除的记录 ID 列表。
     """
     if not ids:
         return
@@ -28,17 +27,15 @@ def delete_records_from_db(table_name: str, ids: list[str]) -> None:
 
 
 async def delete_documents(table_name: str, doc_ids: list[str]) -> dict:
-    """
-    Deletes specified documents from the knowledge base.
+    """从知识库中删除指定文档。
 
     Args:
-        table_name: The name of the table.
-        doc_ids: A list of document IDs to delete.
+        table_name: 表名。
+        doc_ids: 要删除的文档 ID 列表。
 
     Returns:
-        A dictionary containing the operation result statistics.
+        包含操作结果统计的字典。
     """
-    # Local import to avoid circular dependency with sync.py
     from duckkb.engine.sync import sync_db_to_file
 
     validate_table_name(table_name)
@@ -48,7 +45,6 @@ async def delete_documents(table_name: str, doc_ids: list[str]) -> dict:
     count = len(doc_ids)
     await asyncio.to_thread(delete_records_from_db, table_name, doc_ids)
 
-    # Write changes back to file
     await sync_db_to_file(table_name)
 
     return {

@@ -8,6 +8,7 @@
 - 应用上下文单例管理
 """
 
+import threading
 from pathlib import Path
 
 import yaml
@@ -174,7 +175,7 @@ class AppContext:
     """应用上下文单例类。
 
     管理整个应用运行时的共享状态，包括配置、数据库连接和外部客户端。
-    采用单例模式确保全局唯一实例。
+    采用单例模式确保全局唯一实例，使用线程锁保证线程安全。
 
     Attributes:
         kb_path: 知识库目录的绝对路径。
@@ -183,6 +184,7 @@ class AppContext:
     """
 
     _instance: "AppContext | None" = None
+    _lock: threading.Lock = threading.Lock()
 
     def __init__(self, kb_path: Path):
         """初始化应用上下文。
@@ -230,27 +232,36 @@ class AppContext:
         Raises:
             RuntimeError: 若未初始化则抛出异常。
         """
-        if cls._instance is None:
-            raise RuntimeError("AppContext not initialized. Call AppContext.init() first.")
-        return cls._instance
+        with cls._lock:
+            if cls._instance is None:
+                raise RuntimeError("AppContext not initialized. Call AppContext.init() first.")
+            return cls._instance
 
     @classmethod
     def init(cls, kb_path: Path) -> "AppContext":
         """初始化应用上下文单例。
 
+        使用双重检查锁定模式确保线程安全。
+
         Args:
             kb_path: 知识库目录路径。
 
         Returns:
-            新创建的 AppContext 实例。
+            新创建或已存在的 AppContext 实例。
         """
-        cls._instance = AppContext(kb_path)
-        return cls._instance
+        if cls._instance is not None:
+            return cls._instance
+
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = AppContext(kb_path)
+            return cls._instance
 
     @classmethod
     def reset(cls) -> None:
         """重置应用上下文单例（主要用于测试）。"""
-        cls._instance = None
+        with cls._lock:
+            cls._instance = None
 
 
 def get_kb_config() -> KBConfig:

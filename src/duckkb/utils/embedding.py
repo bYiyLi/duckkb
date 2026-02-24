@@ -79,6 +79,7 @@ async def get_embeddings(texts: list[str]) -> list[list[float]]:
 
     Returns:
         向量嵌入列表，每个元素是与输入文本对应的嵌入向量。
+        返回列表长度与输入一致，失败的项为空列表。
 
     Raises:
         Exception: 调用 OpenAI API 失败时抛出异常。
@@ -126,7 +127,7 @@ async def get_embeddings(texts: list[str]) -> list[list[float]]:
             logger.error(f"Failed to generate embeddings: {e}")
             raise
 
-    return [r for r in results if r is not None]
+    return [r if r is not None else [] for r in results]
 
 
 async def get_embedding(text: str) -> list[float]:

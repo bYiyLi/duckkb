@@ -1,7 +1,7 @@
-"""Async file operations utility module.
+"""异步文件操作工具模块。
 
-This module provides asynchronous wrappers for common file operations using
-aiofiles and asyncio.to_thread to ensure non-blocking I/O in async contexts.
+本模块提供常用文件操作的异步封装，使用 aiofiles 和 asyncio.to_thread
+确保在异步上下文中的非阻塞 I/O 操作。
 """
 
 import asyncio
@@ -17,36 +17,38 @@ import orjson
 
 
 async def read_file(file_path: str | Path, encoding: str = "utf-8") -> str:
-    """Asynchronously reads the content of a file.
+    """异步读取文件内容。
 
     Args:
-        file_path: The path to the file to read.
-        encoding: The encoding to use (default: "utf-8").
+        file_path: 文件路径。
+        encoding: 文件编码，默认为 utf-8。
 
     Returns:
-        The content of the file as a string.
+        文件内容字符串。
 
     Raises:
-        FileNotFoundError: If the file does not exist.
-        IOError: If an I/O error occurs during reading.
+        FileNotFoundError: 文件不存在。
+        IOError: 读取时发生 I/O 错误。
     """
     async with aiofiles.open(file_path, encoding=encoding) as f:
         return await f.read()
 
 
-async def read_file_lines(file_path: str | Path, encoding: str = "utf-8") -> AsyncGenerator[str, None]:
-    """Asynchronously reads a file line by line.
+async def read_file_lines(
+    file_path: str | Path, encoding: str = "utf-8"
+) -> AsyncGenerator[str, None]:
+    """异步逐行读取文件。
 
     Args:
-        file_path: The path to the file to read.
-        encoding: The encoding to use (default: "utf-8").
+        file_path: 文件路径。
+        encoding: 文件编码，默认为 utf-8。
 
     Yields:
-        Each line of the file.
+        文件的每一行。
 
     Raises:
-        FileNotFoundError: If the file does not exist.
-        IOError: If an I/O error occurs during reading.
+        FileNotFoundError: 文件不存在。
+        IOError: 读取时发生 I/O 错误。
     """
     async with aiofiles.open(file_path, encoding=encoding) as f:
         async for line in f:
@@ -54,36 +56,36 @@ async def read_file_lines(file_path: str | Path, encoding: str = "utf-8") -> Asy
 
 
 async def read_json(file_path: str | Path, encoding: str = "utf-8") -> Any:
-    """Asynchronously reads a JSON file.
+    """异步读取 JSON 文件。
 
     Args:
-        file_path: The path to the JSON file.
-        encoding: The encoding to use (default: "utf-8").
+        file_path: JSON 文件路径。
+        encoding: 文件编码，默认为 utf-8。
 
     Returns:
-        The parsed JSON content (dict or list).
+        解析后的 JSON 内容（字典或列表）。
 
     Raises:
-        FileNotFoundError: If the file does not exist.
-        JSONDecodeError: If the file content is not valid JSON.
+        FileNotFoundError: 文件不存在。
+        JSONDecodeError: 文件内容不是有效的 JSON。
     """
     content = await read_file(file_path, encoding=encoding)
     return orjson.loads(content)
 
 
 async def read_jsonl(file_path: str | Path, encoding: str = "utf-8") -> list[Any]:
-    """Asynchronously reads a JSONL file.
+    """异步读取 JSONL 文件。
 
     Args:
-        file_path: The path to the JSONL file.
-        encoding: The encoding to use (default: "utf-8").
+        file_path: JSONL 文件路径。
+        encoding: 文件编码，默认为 utf-8。
 
     Returns:
-        A list of parsed JSON objects.
+        解析后的 JSON 对象列表。
 
     Raises:
-        FileNotFoundError: If the file does not exist.
-        JSONDecodeError: If any line is not valid JSON.
+        FileNotFoundError: 文件不存在。
+        JSONDecodeError: 某行不是有效的 JSON。
     """
     content = await read_file(file_path, encoding=encoding)
     records = []
@@ -95,15 +97,15 @@ async def read_jsonl(file_path: str | Path, encoding: str = "utf-8") -> list[Any
 
 
 async def write_file(file_path: str | Path, content: str, encoding: str = "utf-8") -> None:
-    """Asynchronously writes content to a file.
+    """异步写入文件。
 
     Args:
-        file_path: The path to the file to write.
-        content: The string content to write.
-        encoding: The encoding to use (default: "utf-8").
+        file_path: 文件路径。
+        content: 要写入的字符串内容。
+        encoding: 文件编码，默认为 utf-8。
 
     Raises:
-        IOError: If an I/O error occurs during writing.
+        IOError: 写入时发生 I/O 错误。
     """
     async with aiofiles.open(file_path, mode="w", encoding=encoding) as f:
         await f.write(content)
@@ -115,16 +117,16 @@ async def write_json(
     encoding: str = "utf-8",
     atomic: bool = False,
 ) -> None:
-    """Asynchronously writes data to a JSON file.
+    """异步写入 JSON 文件。
 
     Args:
-        file_path: The path to the file to write.
-        data: The data to serialize to JSON.
-        encoding: The encoding to use (default: "utf-8").
-        atomic: If True, uses atomic write (default: False).
+        file_path: 文件路径。
+        data: 要序列化为 JSON 的数据。
+        encoding: 文件编码，默认为 utf-8。
+        atomic: 是否使用原子写入，默认为 False。
 
     Raises:
-        IOError: If an I/O error occurs during writing.
+        IOError: 写入时发生 I/O 错误。
     """
     content = orjson.dumps(data).decode(encoding)
     if atomic:
@@ -134,129 +136,115 @@ async def write_json(
 
 
 async def atomic_write_file(file_path: str | Path, content: str, encoding: str = "utf-8") -> None:
-    """Asynchronously writes content to a file atomically.
+    """异步原子写入文件。
 
-    This function writes the content to a temporary file in the same directory
-    as the target file, then renames the temporary file to the target file.
-    This ensures that the file is either fully written or not written at all,
-    preventing partial writes in case of failure.
+    将内容写入目标文件所在目录的临时文件，然后重命名为目标文件。
+    确保文件要么完全写入，要么完全不写入，防止写入失败导致的部分写入。
 
     Args:
-        file_path: The path to the destination file.
-        content: The string content to write.
-        encoding: The encoding to use (default: "utf-8").
+        file_path: 目标文件路径。
+        content: 要写入的字符串内容。
+        encoding: 文件编码，默认为 utf-8。
 
     Raises:
-        IOError: If an I/O error occurs during writing or renaming.
+        IOError: 写入或重命名时发生 I/O 错误。
     """
     file_path = Path(file_path)
     directory = file_path.parent
 
-    # Ensure the directory exists
     if not await dir_exists(directory):
         await mkdir(directory)
-
-    # Create a temporary file in the same directory
-    # We use a context manager for the temporary file logic manually
-    # because aiofiles doesn't directly support tempfile.NamedTemporaryFile cleanly in async
-    # for this specific atomic pattern involving rename across filesystems (if we used /tmp)
-    # But here we use same dir to ensure atomic rename.
 
     fd, temp_path = await asyncio.to_thread(tempfile.mkstemp, dir=directory, text=True)
 
     try:
-        # We need to close the file descriptor opened by mkstemp
-        # because aiofiles will open it again by path
         await asyncio.to_thread(os.close, fd)
 
         async with aiofiles.open(temp_path, mode="w", encoding=encoding) as f:
             await f.write(content)
             await f.flush()
-            # Ensure data is written to disk
             await asyncio.to_thread(os.fsync, f.fileno())
 
-        # Atomic rename
         await asyncio.to_thread(os.replace, temp_path, file_path)
     except Exception:
-        # Clean up temp file if something goes wrong
         if await file_exists(temp_path):
             await unlink(temp_path)
         raise
 
 
 async def file_exists(file_path: str | Path) -> bool:
-    """Asynchronously checks if a file exists.
+    """异步检查文件是否存在。
 
     Args:
-        file_path: The path to check.
+        file_path: 要检查的路径。
 
     Returns:
-        True if the file exists and is a file, False otherwise.
+        如果文件存在且是文件则返回 True，否则返回 False。
     """
     return await asyncio.to_thread(os.path.isfile, file_path)
 
 
 async def dir_exists(dir_path: str | Path) -> bool:
-    """Asynchronously checks if a directory exists.
+    """异步检查目录是否存在。
 
     Args:
-        dir_path: The path to check.
+        dir_path: 要检查的路径。
 
     Returns:
-        True if the directory exists, False otherwise.
+        如果目录存在则返回 True，否则返回 False。
     """
     return await asyncio.to_thread(os.path.isdir, dir_path)
 
 
 async def glob_files(pattern: str) -> list[str]:
-    """Asynchronously finds files matching a glob pattern.
+    """异步查找匹配 glob 模式的文件。
 
     Args:
-        pattern: The glob pattern to match.
+        pattern: glob 匹配模式。
 
     Returns:
-        A list of matching file paths.
+        匹配的文件路径列表。
     """
     return await asyncio.to_thread(glob.glob, pattern)
 
 
 async def mkdir(path: str | Path, parents: bool = True, exist_ok: bool = True) -> None:
-    """Asynchronously creates a directory.
+    """异步创建目录。
 
     Args:
-        path: The directory path to create.
-        parents: If True, creates parent directories as needed (default: True).
-        exist_ok: If True, does not raise an error if the directory already exists (default: True).
+        path: 要创建的目录路径。
+        parents: 是否创建父目录，默认为 True。
+        exist_ok: 目录已存在时是否不报错，默认为 True。
 
     Raises:
-        OSError: If directory creation fails.
+        OSError: 目录创建失败。
     """
     await asyncio.to_thread(os.makedirs, path, exist_ok=exist_ok)
 
 
 async def unlink(path: str | Path) -> None:
-    """Asynchronously removes a file.
+    """异步删除文件。
 
     Args:
-        path: The path to the file to remove.
+        path: 要删除的文件路径。
 
     Raises:
-        FileNotFoundError: If the file does not exist.
-        OSError: If removal fails.
+        FileNotFoundError: 文件不存在。
+        OSError: 删除失败。
     """
     await asyncio.to_thread(os.unlink, path)
 
 
 async def get_file_stat(path: str | Path) -> os.stat_result:
-    """Asynchronously gets file status.
+    """异步获取文件状态。
 
     Args:
-        path: The path to the file.
+        path: 文件路径。
 
     Returns:
-        The status structure of the file.
+        文件状态结构。
 
     Raises:
-        FileNotFoundError: If the file does not exist.
+        FileNotFoundError: 文件不存在。
     """
     return await asyncio.to_thread(os.stat, path)

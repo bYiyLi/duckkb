@@ -1,4 +1,0 @@
-- [x] 目录结构符合规范（包括 `engine/` 包和 `logger.py`）。
-- [x] `uv run python -m duckkb.main --help` 运行成功。
-- [x] `config.py` 能从环境变量加载 `KB_PATH`。
-- [x] 所有模块均无错误导入。

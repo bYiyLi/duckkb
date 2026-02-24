@@ -1,3 +1,8 @@
+"""智能搜索模块。
+
+提供向量搜索和全文搜索的混合搜索功能，支持元数据过滤和结果排序。
+"""
+
 import asyncio
 import re
 from typing import Any
@@ -22,18 +27,17 @@ async def smart_search(
     table_filter: str | None = None,
     alpha: float = 0.5,
 ) -> list[dict[str, Any]]:
-    """
-    Perform a hybrid search (Vector Search + Metadata).
+    """执行混合搜索（向量搜索 + 元数据搜索）。
 
     Args:
-        query: The search query string.
-        limit: Max results to return.
-        table_filter: Optional filter for source_table.
-        alpha: Weight for vector search (0.0 to 1.0). Default 0.5.
+        query: 搜索查询字符串。
+        limit: 返回结果的最大数量。
+        table_filter: 可选的源表过滤器。
+        alpha: 向量搜索的权重系数（0.0 到 1.0），默认为 0.5。
 
     Returns:
-        A list of dictionaries containing search results.
-        Each dictionary has keys: ref_id, source_table, source_field, metadata, score.
+        包含搜索结果的字典列表，每个字典包含：
+        ref_id, source_table, source_field, metadata, score。
     """
     if not query:
         return []
@@ -93,19 +97,18 @@ def _build_hybrid_query(
     vector_w: float,
     text_w: float,
 ) -> tuple[str, list[Any]]:
-    """
-    Build the SQL query and parameters for hybrid search.
+    """构建混合搜索的 SQL 查询和参数。
 
     Args:
-        query: The search query string.
-        query_vec: The query embedding vector.
-        limit: Max results to return.
-        table_filter: Optional filter for source_table.
-        vector_w: Weight for vector search.
-        text_w: Weight for text search.
+        query: 搜索查询字符串。
+        query_vec: 查询向量。
+        limit: 返回结果的最大数量。
+        table_filter: 可选的源表过滤器。
+        vector_w: 向量搜索权重。
+        text_w: 文本搜索权重。
 
     Returns:
-        A tuple containing the SQL string and the list of parameters.
+        包含 SQL 字符串和参数列表的元组。
     """
     filter_clause = ""
     filter_params = []
@@ -158,51 +161,45 @@ def _build_hybrid_query(
     """
 
     params = []
-    # Vector CTE params
     params.append(query_vec)
     params.extend(filter_params)
     params.append(limit * PREFETCH_MULTIPLIER)
 
-    # Text CTE params
     params.append(query)
     params.append(query)
     params.extend(filter_params)
     params.append(limit * PREFETCH_MULTIPLIER)
 
-    # Combined params
     params.append(vector_w)
     params.append(text_w)
 
-    # Final LIMIT
     params.append(limit)
 
     return sql, params
 
 
 def _execute_search_query(sql: str, params: list[Any]) -> list[Any]:
-    """
-    Execute the search query against the database.
+    """执行搜索查询。
 
     Args:
-        sql: The SQL query string.
-        params: The list of parameters for the query.
+        sql: SQL 查询字符串。
+        params: 查询参数列表。
 
     Returns:
-        A list of rows returned by the query.
+        查询返回的行列表。
     """
     with get_db(read_only=True) as conn:
         return conn.execute(sql, params).fetchall()
 
 
 def _process_search_results(rows: list[Any]) -> list[dict[str, Any]]:
-    """
-    Process raw database rows into structured results.
+    """处理原始数据库行为结构化结果。
 
     Args:
-        rows: The raw rows returned from the database.
+        rows: 数据库返回的原始行。
 
     Returns:
-        A list of dictionaries containing the processed results.
+        包含处理结果的字典列表。
     """
     results = []
     for r in rows:
@@ -226,24 +223,43 @@ def _process_search_results(rows: list[Any]) -> list[dict[str, Any]]:
 
 
 async def query_raw_sql(sql: str) -> list[dict[str, Any]]:
-    """
-    Execute raw SQL safely.
+    """安全执行原始 SQL 查询。
 
-    Safety checks:
-    1. Read-only connection.
-    2. Auto-limit.
-    3. Result size limit (2MB).
-    4. Forbidden keywords.
+    安全检查：
+    1. 只允许 SELECT 查询（白名单模式）。
+    2. 只读连接。
+    3. 自动添加 LIMIT。
+    4. 结果大小限制（2MB）。
+    5. 禁止子查询中的危险操作。
 
     Args:
-        sql: The raw SQL query string.
+        sql: 原始 SQL 查询字符串。
 
     Returns:
-        A list of dictionaries representing the query results.
+        表示查询结果的字典列表。
+
+    Raises:
+        DatabaseError: SQL 包含禁止的关键字或不是 SELECT 查询。
+        ValueError: 结果集大小超限或执行失败。
     """
-    sql_upper = sql.upper()
+    sql_stripped = sql.strip()
+    sql_upper = sql_stripped.upper()
+
+    if not sql_upper.startswith("SELECT"):
+        raise DatabaseError("Only SELECT queries are allowed.")
 
     forbidden = [
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "DROP",
+        "CREATE",
+        "ALTER",
+        "TRUNCATE",
+        "EXEC",
+        "EXECUTE",
+        "GRANT",
+        "REVOKE",
         "ATTACH",
         "DETACH",
         "PRAGMA",
@@ -253,13 +269,6 @@ async def query_raw_sql(sql: str) -> list[dict[str, Any]]:
         "LOAD",
         "INSTALL",
         "VACUUM",
-        "DELETE",
-        "UPDATE",
-        "DROP",
-        "INSERT",
-        "ALTER",
-        "CREATE",
-        "TRUNCATE",
         "BEGIN",
         "COMMIT",
         "ROLLBACK",
@@ -268,24 +277,23 @@ async def query_raw_sql(sql: str) -> list[dict[str, Any]]:
     if re.search(forbidden_pattern, sql_upper):
         raise DatabaseError("Forbidden keyword in SQL query.")
 
-    if "SELECT" in sql_upper and not re.search(r"\bLIMIT\s+\d+", sql_upper):
-        sql += f" LIMIT {QUERY_DEFAULT_LIMIT}"
+    if not re.search(r"\bLIMIT\s+\d+", sql_upper):
+        sql = sql_stripped + f" LIMIT {QUERY_DEFAULT_LIMIT}"
 
     return await asyncio.to_thread(_execute_raw, sql)
 
 
 def _execute_raw(sql: str) -> list[dict[str, Any]]:
-    """
-    Execute a raw SQL query and return the results as a list of dictionaries.
+    """执行原始 SQL 查询并返回字典列表形式的结果。
 
     Args:
-        sql: The SQL query to execute.
+        sql: 要执行的 SQL 查询。
 
     Returns:
-        A list of dictionaries where keys are column names and values are row values.
+        字典列表，键为列名，值为行值。
 
     Raises:
-        ValueError: If the result set size exceeds the limit or execution fails.
+        ValueError: 结果集大小超限或执行失败。
     """
     try:
         with get_db(read_only=True) as conn:

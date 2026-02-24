@@ -22,7 +22,7 @@ class TestSearcher:
     @pytest.mark.asyncio
     async def test_smart_search_with_data(self, mock_kb_path):
         await init_schema()
-        
+
         # Create a dummy embedding vector
         embedding = [0.1] * 1536
 
@@ -38,7 +38,7 @@ class TestSearcher:
     @pytest.mark.asyncio
     async def test_smart_search_with_table_filter(self, mock_kb_path):
         await init_schema()
-        
+
         embedding = [0.1] * 1536
 
         with get_db(read_only=False) as conn:
@@ -57,7 +57,7 @@ class TestSearcher:
     @pytest.mark.asyncio
     async def test_smart_search_alpha_clamping(self, mock_kb_path):
         await init_schema()
-        
+
         embedding = [0.1] * 1536
 
         with get_db(read_only=False) as conn:
@@ -77,7 +77,7 @@ class TestSearcher:
         # And create the table since init_schema fails in this env due to missing extensions
         with get_db(read_only=False) as conn:
             conn.execute(f"CREATE TABLE IF NOT EXISTS {SYS_SEARCH_TABLE} (id VARCHAR)")
-            
+
         results = _execute_search_query(f"SELECT * FROM {SYS_SEARCH_TABLE} WHERE 1=0", [])
         assert results == []
 
@@ -88,7 +88,7 @@ class TestSearcher:
         table_filter = None
         vector_w = 0.5
         text_w = 0.5
-        
+
         sql, params = _build_hybrid_query(query, query_vec, limit, table_filter, vector_w, text_w)
         assert "vector_search AS" in sql
         assert "text_search AS" in sql
@@ -99,15 +99,15 @@ class TestSearcher:
         # vector_w (1), text_w (1) = 2
         # limit (1) = 1
         # Total params = 2 + 3 + 2 + 1 = 8 (without filter)
-        
+
         # Actually params:
         # [vec], limit*2
         # query, query, limit*2
         # vector_w, text_w
         # limit
-        
+
         # filter_params is empty.
-        
+
         # let's just check length and content roughly
         assert len(params) >= 8
         assert params[-1] == limit

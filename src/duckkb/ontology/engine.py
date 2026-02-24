@@ -11,7 +11,6 @@ from typing import Any
 from duckkb.logger import logger
 from duckkb.ontology._models import NodeType, Ontology
 
-
 JSON_TO_DUCKDB_TYPE_MAP = {
     "string": "VARCHAR",
     "integer": "INTEGER",

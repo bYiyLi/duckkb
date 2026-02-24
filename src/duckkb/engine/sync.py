@@ -11,6 +11,7 @@ from duckkb.constants import (
     DATA_DIR_NAME,
     SYNC_STATE_FILE,
     SYS_SEARCH_TABLE,
+    SearchRow,
     validate_table_name,
 )
 from duckkb.db import get_db
@@ -31,8 +32,6 @@ from duckkb.utils.file_ops import (
     write_file,
 )
 from duckkb.utils.text import compute_text_hash, segment_text
-
-type SearchRow = tuple[str, str, str, str, str, list[float], str, float]
 
 
 def get_all_table_names() -> list[str]:
@@ -82,8 +81,8 @@ async def persist_all_tables(kb_path: Path | None = None) -> dict[str, int]:
     if await file_exists(state_file):
         try:
             await write_file(state_file, "{}")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to reset sync state file: {e}")
 
     return results
 
@@ -202,8 +201,8 @@ async def sync_db_to_file(table_name: str, kb_path: Path | None = None) -> None:
                 sync_state[table_name] = file_stat.st_mtime
 
                 await write_file(state_file, orjson.dumps(sync_state).decode("utf-8"))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Failed to update sync state: {e}")
 
     except Exception as e:
         logger.error(f"Failed to sync DB to file for {table_name}: {e}")
@@ -240,9 +239,7 @@ def _fetch_table_records(table_name: str) -> list[dict]:
     return records
 
 
-async def _process_file(
-    file_path: Path, table_name: str, ontology_engine: OntologyEngine
-) -> None:
+async def _process_file(file_path: Path, table_name: str, ontology_engine: OntologyEngine) -> None:
     """处理单个文件的同步逻辑。
 
     包括读取、解析、生成 Embedding、计算差异并更新数据库。
@@ -282,13 +279,11 @@ async def _process_file(
         f"Diff for {table_name}: {len(to_upsert_records)} to upsert, {len(to_delete_ids)} to delete."
     )
 
-    # 5.1 删除
-    if to_delete_ids:
-        await asyncio.to_thread(delete_records_from_db, table_name, list(to_delete_ids))
-
-    # 5.2 插入 (Upsert)
-    if to_upsert_records:
-        await _upsert_records(table_name, to_upsert_records, fields_to_embed)
+    # 5. 执行更新（事务包装）
+    if to_delete_ids or to_upsert_records:
+        await _execute_update_with_transaction(
+            table_name, to_delete_ids, to_upsert_records, fields_to_embed
+        )
 
 
 def _compute_diff(
@@ -463,11 +458,124 @@ async def _upsert_records(
         await asyncio.to_thread(_bulk_insert_rows, rows_to_insert)
 
 
+async def _execute_update_with_transaction(
+    table_name: str,
+    to_delete_ids: set[str],
+    to_upsert_records: list[dict],
+    fields_to_embed: set[str] | None,
+) -> None:
+    """在事务中执行删除和插入操作。
+
+    防止并发场景下数据不一致。
+    先在事务外生成 embedding，再在事务内执行数据库操作。
+
+    Args:
+        table_name: 表名。
+        to_delete_ids: 要删除的 ID 集合。
+        to_upsert_records: 要插入/更新的记录列表。
+        fields_to_embed: 需要嵌入的字段集合。
+    """
+    if not to_upsert_records:
+        def _do_delete_only() -> None:
+            with get_db(read_only=False) as conn:
+                conn.begin()
+                try:
+                    if to_delete_ids:
+                        placeholders = ",".join("?" * len(to_delete_ids))
+                        conn.execute(
+                            f"DELETE FROM {SYS_SEARCH_TABLE} WHERE source_table = ? AND ref_id IN ({placeholders})",
+                            [table_name, *to_delete_ids],
+                        )
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    raise
+        await asyncio.to_thread(_do_delete_only)
+        return
+
+    await _upsert_records(table_name, to_upsert_records, fields_to_embed)
+
+    def _do_update() -> None:
+        with get_db(read_only=False) as conn:
+            conn.begin()
+            try:
+                if to_delete_ids:
+                    placeholders = ",".join("?" * len(to_delete_ids))
+                    conn.execute(
+                        f"DELETE FROM {SYS_SEARCH_TABLE} WHERE source_table = ? AND ref_id IN ({placeholders})",
+                        [table_name, *to_delete_ids],
+                    )
+
+                if to_upsert_records:
+                    _upsert_records_sync(conn, table_name, to_upsert_records, fields_to_embed)
+
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+    await asyncio.to_thread(_do_update)
+
+
+def _upsert_records_sync(
+    conn: duckdb.DuckDBPyConnection,
+    table_name: str,
+    records: list[dict],
+    fields_to_embed: set[str] | None,
+) -> None:
+    """同步版本：批量插入记录。
+
+    Args:
+        conn: 数据库连接。
+        table_name: 表名。
+        records: 要插入的记录列表。
+        fields_to_embed: 需要嵌入的字段集合。
+    """
+    rows_to_insert: list[SearchRow] = []
+
+    for record in records:
+        for key, value in record.items():
+            if isinstance(value, str) and value.strip():
+                if fields_to_embed is not None and key not in fields_to_embed:
+                    continue
+
+                ref_id = str(record.get("id", ""))
+                embedding_id = compute_text_hash(value)
+
+                rows_to_insert.append(
+                    (
+                        ref_id,
+                        table_name,
+                        key,
+                        "",
+                        embedding_id,
+                        [],
+                        orjson.dumps(record).decode("utf-8"),
+                        1.0,
+                    )
+                )
+
+    if rows_to_insert:
+        conn.executemany(
+            f"INSERT INTO {SYS_SEARCH_TABLE} VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows_to_insert
+        )
+
+
 def _bulk_insert_rows(rows: list[SearchRow]) -> None:
     """批量插入行到数据库。
+
+    使用事务包装以提高性能。
 
     Args:
         rows: 要插入的行数据列表。
     """
     with get_db(read_only=False) as conn:
-        conn.executemany(f"INSERT INTO {SYS_SEARCH_TABLE} VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows)
+        conn.begin()
+        try:
+            conn.executemany(
+                f"INSERT INTO {SYS_SEARCH_TABLE} VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
