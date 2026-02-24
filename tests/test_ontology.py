@@ -6,8 +6,6 @@ from duckkb.ontology import (
     Ontology,
     OntologyEngine,
     VectorConfig,
-    generate_node_ddl,
-    generate_nodes_ddl,
 )
 
 
@@ -183,7 +181,7 @@ class TestDDLGeneration:
                 },
             },
         )
-        ddl = generate_node_ddl("Character", node)
+        ddl = OntologyEngine._generate_node_ddl("Character", node)
         assert "CREATE TABLE IF NOT EXISTS characters" in ddl
         assert "id VARCHAR" in ddl
         assert "name VARCHAR" in ddl
@@ -202,7 +200,7 @@ class TestDDLGeneration:
                 },
             },
         )
-        ddl = generate_node_ddl("Event", node)
+        ddl = OntologyEngine._generate_node_ddl("Event", node)
         assert "created_at TIMESTAMP" in ddl
 
     def test_generate_nodes_ddl_multiple(self):
@@ -220,13 +218,13 @@ class TestDDLGeneration:
                 ),
             }
         )
-        ddl = generate_nodes_ddl(ontology)
+        ddl = OntologyEngine(ontology).generate_ddl()
         assert "CREATE TABLE IF NOT EXISTS characters" in ddl
         assert "CREATE TABLE IF NOT EXISTS locations" in ddl
 
     def test_generate_nodes_ddl_empty(self):
         ontology = Ontology()
-        ddl = generate_nodes_ddl(ontology)
+        ddl = OntologyEngine(ontology).generate_ddl()
         assert ddl == ""
 
 

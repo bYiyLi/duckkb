@@ -12,88 +12,15 @@ from duckkb.logger import logger
 from duckkb.ontology._models import NodeType, Ontology
 
 
-def json_type_to_duckdb(prop_def: dict[str, Any]) -> str:
-    """将 JSON Schema 类型映射到 DuckDB 类型。
-
-    Args:
-        prop_def: JSON Schema 属性定义。
-
-    Returns:
-        DuckDB 类型字符串。
-    """
-    json_type = prop_def.get("type", "string")
-
-    type_map = {
-        "string": "VARCHAR",
-        "integer": "INTEGER",
-        "number": "DOUBLE",
-        "boolean": "BOOLEAN",
-        "array": "JSON",
-        "object": "JSON",
-        "null": "VARCHAR",
-    }
-
-    duckdb_type = type_map.get(json_type, "VARCHAR")
-
-    if prop_def.get("format") == "date-time":
-        duckdb_type = "TIMESTAMP"
-    elif prop_def.get("format") == "date":
-        duckdb_type = "DATE"
-    elif prop_def.get("format") == "time":
-        duckdb_type = "TIME"
-
-    return duckdb_type
-
-
-def generate_node_ddl(node_name: str, node_type: NodeType) -> str:
-    """根据节点定义生成 DDL 语句。
-
-    Args:
-        node_name: 节点类型名称。
-        node_type: 节点类型定义。
-
-    Returns:
-        CREATE TABLE DDL 语句。
-    """
-    columns = []
-
-    schema = node_type.json_schema
-    if schema and "properties" in schema:
-        for prop_name, prop_def in schema["properties"].items():
-            col_type = json_type_to_duckdb(prop_def)
-            columns.append(f"    {prop_name} {col_type}")
-
-    if node_type.identity:
-        pk_str = ", ".join(node_type.identity)
-        columns.append(f"    PRIMARY KEY ({pk_str})")
-
-    if not columns:
-        logger.warning(f"Node {node_name} has no columns defined")
-        return ""
-
-    columns_str = ",\n".join(columns)
-    return f"CREATE TABLE IF NOT EXISTS {node_type.table} (\n{columns_str}\n);"
-
-
-def generate_nodes_ddl(ontology: Ontology) -> str:
-    """根据本体定义生成所有节点表的 DDL 语句。
-
-    Args:
-        ontology: 本体定义。
-
-    Returns:
-        所有节点表的 DDL 语句，用换行分隔。
-    """
-    if not ontology.nodes:
-        return ""
-
-    ddl_statements = []
-    for node_name, node_type in ontology.nodes.items():
-        ddl = generate_node_ddl(node_name, node_type)
-        if ddl:
-            ddl_statements.append(ddl)
-
-    return "\n\n".join(ddl_statements)
+JSON_TO_DUCKDB_TYPE_MAP = {
+    "string": "VARCHAR",
+    "integer": "INTEGER",
+    "number": "DOUBLE",
+    "boolean": "BOOLEAN",
+    "array": "JSON",
+    "object": "JSON",
+    "null": "VARCHAR",
+}
 
 
 class OntologyEngine:
@@ -112,6 +39,58 @@ class OntologyEngine:
             ontology: 本体定义实例。
         """
         self.ontology = ontology
+
+    @staticmethod
+    def _json_type_to_duckdb(prop_def: dict[str, Any]) -> str:
+        """将 JSON Schema 类型映射到 DuckDB 类型。
+
+        Args:
+            prop_def: JSON Schema 属性定义。
+
+        Returns:
+            DuckDB 类型字符串。
+        """
+        json_type = prop_def.get("type", "string")
+        duckdb_type = JSON_TO_DUCKDB_TYPE_MAP.get(json_type, "VARCHAR")
+
+        if prop_def.get("format") == "date-time":
+            duckdb_type = "TIMESTAMP"
+        elif prop_def.get("format") == "date":
+            duckdb_type = "DATE"
+        elif prop_def.get("format") == "time":
+            duckdb_type = "TIME"
+
+        return duckdb_type
+
+    @staticmethod
+    def _generate_node_ddl(node_name: str, node_type: NodeType) -> str:
+        """根据节点定义生成 DDL 语句。
+
+        Args:
+            node_name: 节点类型名称。
+            node_type: 节点类型定义。
+
+        Returns:
+            CREATE TABLE DDL 语句。
+        """
+        columns = []
+
+        schema = node_type.json_schema
+        if schema and "properties" in schema:
+            for prop_name, prop_def in schema["properties"].items():
+                col_type = OntologyEngine._json_type_to_duckdb(prop_def)
+                columns.append(f"    {prop_name} {col_type}")
+
+        if node_type.identity:
+            pk_str = ", ".join(node_type.identity)
+            columns.append(f"    PRIMARY KEY ({pk_str})")
+
+        if not columns:
+            logger.warning(f"Node {node_name} has no columns defined")
+            return ""
+
+        columns_str = ",\n".join(columns)
+        return f"CREATE TABLE IF NOT EXISTS {node_type.table} (\n{columns_str}\n);"
 
     def get_node_tables(self) -> dict[str, str]:
         """获取所有节点表名映射。
@@ -141,7 +120,16 @@ class OntologyEngine:
         Returns:
             所有节点表的 DDL 语句。
         """
-        return generate_nodes_ddl(self.ontology)
+        if not self.ontology.nodes:
+            return ""
+
+        ddl_statements = []
+        for node_name, node_type in self.ontology.nodes.items():
+            ddl = self._generate_node_ddl(node_name, node_type)
+            if ddl:
+                ddl_statements.append(ddl)
+
+        return "\n\n".join(ddl_statements)
 
     def get_vector_fields(self, node_name: str) -> dict[str, Any] | None:
         """获取节点的向量字段定义。

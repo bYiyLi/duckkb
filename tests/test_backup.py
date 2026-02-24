@@ -1,9 +1,18 @@
 
-import shutil
-from pathlib import Path
+import os
+import time
+
 import pytest
+
+from duckkb.constants import (
+    BACKUP_DIR_NAME,
+    BUILD_DIR_NAME,
+    DATA_DIR_NAME,
+    DB_FILE_NAME,
+    MAX_BACKUPS,
+)
 from duckkb.engine.backup import BackupManager
-from duckkb.constants import BACKUP_DIR_NAME, BUILD_DIR_NAME, DATA_DIR_NAME, DB_FILE_NAME
+
 
 class TestBackupManager:
     @pytest.fixture
@@ -80,57 +89,19 @@ class TestBackupManager:
 
     def test_cleanup_old_backups(self, kb_path):
         manager = BackupManager(kb_path)
-        # Create MAX_BACKUPS + 2 backups
-        # We need to ensure they have different timestamps or are just different entries
-        # Since the timestamp has seconds resolution, we might need to mock datetime or just create them.
-        # But create_backup uses datetime.now().
-        # Let's mock datetime to ensure different names/times if needed, 
-        # but for simple count check, maybe just calling it is enough if it's fast? 
-        # Actually if they happen in same second, name collision might occur if not handled?
-        # The code: timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
-        # So collision is possible.
         
-        # Let's mock datetime in the loop
-        from unittest.mock import patch
-        from datetime import datetime, timedelta, UTC
-        
-        base_time = datetime.now(UTC)
-        
-        with patch("duckkb.engine.backup.datetime") as mock_datetime:
-            # We need to mock now() to return different times
-            # and fromtimestamp() to work for list_backups
-            mock_datetime.now.side_effect = [base_time + timedelta(seconds=i) for i in range(10)]
-            mock_datetime.fromtimestamp.side_effect = datetime.fromtimestamp # Pass through
-            # Wait, mocking the class replaces fromtimestamp too.
-            # It's better to patch 'duckkb.engine.backup.datetime' specifically.
-            # But fromtimestamp is called in list_backups.
-            
-            # Simpler approach: just create backups and let them be. 
-            # If they collide, create_backup might overwrite or fail?
-            # The code: backup_dir.mkdir(parents=True, exist_ok=True)
-            # It overwrites.
-            pass
-
-        # Let's just try creating 5 backups (MAX is usually 5 or so?)
-        # MAX_BACKUPS is imported from constants. Let's check it.
-        # constants.py: MAX_BACKUPS = 5 (usually).
-        
-        # Let's manually create directories to simulate backups to avoid waiting
+        # Manually create directories to simulate backups
         backup_base = kb_path / BUILD_DIR_NAME / BACKUP_DIR_NAME
         backup_base.mkdir(parents=True, exist_ok=True)
         
-        for i in range(10):
+        # Create more than MAX_BACKUPS
+        for i in range(MAX_BACKUPS + 5):
             d = backup_base / f"backup_{i}"
             d.mkdir()
             # Ensure different mtime
-            import time
-            import os
             os.utime(d, (time.time() + i, time.time() + i))
             
         manager._cleanup_old_backups()
         
         backups = manager.list_backups()
-        # It should keep MAX_BACKUPS.
-        # We need to know MAX_BACKUPS value.
-        from duckkb.constants import MAX_BACKUPS
         assert len(backups) <= MAX_BACKUPS

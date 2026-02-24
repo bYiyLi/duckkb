@@ -13,7 +13,7 @@ from duckkb.constants import SYS_SEARCH_TABLE
 from duckkb.db import get_db
 from duckkb.engine.backup import BackupManager
 from duckkb.logger import logger
-from duckkb.ontology import Ontology, generate_nodes_ddl
+from duckkb.ontology import Ontology, OntologyEngine
 
 
 class MigrationError(Exception):
@@ -210,7 +210,7 @@ class MigrationManager:
                     raise MigrationError(f"Failed to remove table {table_name}: {e}") from e
 
             if new_ontology.nodes:
-                nodes_ddl = generate_nodes_ddl(new_ontology)
+                nodes_ddl = OntologyEngine(new_ontology).generate_ddl()
                 if nodes_ddl:
                     try:
                         conn.execute(nodes_ddl)

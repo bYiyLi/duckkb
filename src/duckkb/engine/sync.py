@@ -5,6 +5,7 @@ from pathlib import Path
 
 import orjson
 
+from duckkb.config import AppContext
 from duckkb.constants import (
     BUILD_DIR_NAME,
     DATA_DIR_NAME,
@@ -17,6 +18,7 @@ from duckkb.engine.cache import clean_cache
 from duckkb.engine.deleter import delete_records_from_db
 from duckkb.exceptions import InvalidTableNameError
 from duckkb.logger import logger
+from duckkb.ontology import OntologyEngine
 from duckkb.utils.embedding import get_embeddings
 from duckkb.utils.file_ops import (
     atomic_write_file,
@@ -54,8 +56,6 @@ async def persist_all_tables(kb_path: Path | None = None) -> dict[str, int]:
         包含每个表记录数的字典。
     """
     if kb_path is None:
-        from duckkb.config import AppContext
-
         kb_path = AppContext.get().kb_path
 
     table_names = await asyncio.to_thread(get_all_table_names)
@@ -119,6 +119,9 @@ async def sync_knowledge_base(kb_path: Path) -> None:
     file_pattern = str(data_dir / "*.jsonl")
     matched_files = await glob_files(file_pattern)
 
+    # Initialize OntologyEngine
+    ontology_engine = OntologyEngine(AppContext.get().kb_config.ontology)
+
     for file_path_str in matched_files:
         file_path = Path(file_path_str)
         table_name = file_path.stem
@@ -139,7 +142,7 @@ async def sync_knowledge_base(kb_path: Path) -> None:
         logger.info(f"Syncing table {table_name}...")
 
         try:
-            await _process_file(file_path, table_name)
+            await _process_file(file_path, table_name, ontology_engine)
             sync_state[table_name] = mtime
         except Exception as e:
             logger.error(f"Failed to sync {table_name}: {e}")
@@ -171,8 +174,6 @@ async def sync_db_to_file(table_name: str, kb_path: Path | None = None) -> None:
     """
     # 避免循环导入，运行时导入 AppContext
     if kb_path is None:
-        from duckkb.config import AppContext
-
         kb_path = AppContext.get().kb_path
 
     target_path = kb_path / DATA_DIR_NAME / f"{table_name}.jsonl"
@@ -239,7 +240,9 @@ def _fetch_table_records(table_name: str) -> list[dict]:
     return records
 
 
-async def _process_file(file_path: Path, table_name: str) -> None:
+async def _process_file(
+    file_path: Path, table_name: str, ontology_engine: OntologyEngine
+) -> None:
     """处理单个文件的同步逻辑。
 
     包括读取、解析、生成 Embedding、计算差异并更新数据库。
@@ -247,6 +250,7 @@ async def _process_file(file_path: Path, table_name: str) -> None:
     Args:
         file_path: JSONL 文件路径。
         table_name: 对应的表名。
+        ontology_engine: 本体引擎实例。
 
     Raises:
         ValueError: 如果文件读取失败。
@@ -257,32 +261,19 @@ async def _process_file(file_path: Path, table_name: str) -> None:
     except Exception as e:
         raise ValueError(f"Failed to read {file_path}: {e}") from e
 
-    file_map = {str(r.get("id", "")): r for r in file_records if r.get("id")}
-
     # 2. 获取 DB 状态
     db_state = await asyncio.to_thread(_get_db_state, table_name)
 
-    # 3. 计算 Diff
-    to_delete_ids = set(db_state.keys()) - set(file_map.keys())
-    to_upsert_records = []
+    # 3. 获取向量字段配置
+    node_type = ontology_engine.get_node_by_table(table_name)
+    fields_to_embed: set[str] | None = None
+    if node_type and node_type.vectors:
+        fields_to_embed = set(node_type.vectors.keys())
 
-    for ref_id, record in file_map.items():
-        if ref_id not in db_state:
-            to_upsert_records.append(record)
-        else:
-            # 检查内容是否变更
-            current_hashes = set()
-            for _key, value in record.items():
-                if isinstance(value, str) and value.strip():
-                    current_hashes.add(compute_text_hash(value))
+    # 4. 计算 Diff
+    to_upsert_records, to_delete_ids = _compute_diff(file_records, db_state, fields_to_embed)
 
-            db_hashes = set(db_state[ref_id].values())
-
-            if current_hashes != db_hashes:
-                to_upsert_records.append(record)
-                to_delete_ids.add(ref_id)
-
-    # 4. 执行更新
+    # 5. 执行更新
     if not to_delete_ids and not to_upsert_records:
         logger.info(f"Table {table_name} is up to date.")
         return
@@ -291,13 +282,59 @@ async def _process_file(file_path: Path, table_name: str) -> None:
         f"Diff for {table_name}: {len(to_upsert_records)} to upsert, {len(to_delete_ids)} to delete."
     )
 
-    # 4.1 删除
+    # 5.1 删除
     if to_delete_ids:
         await asyncio.to_thread(delete_records_from_db, table_name, list(to_delete_ids))
 
-    # 4.2 插入 (Upsert)
+    # 5.2 插入 (Upsert)
     if to_upsert_records:
-        await _upsert_records(table_name, to_upsert_records)
+        await _upsert_records(table_name, to_upsert_records, fields_to_embed)
+
+
+def _compute_diff(
+    file_records: list[dict],
+    db_state: dict[str, dict[str, str]],
+    fields_to_embed: set[str] | None,
+) -> tuple[list[dict], set[str]]:
+    """计算需要 Upsert 的记录和需要删除的 ID。
+
+    Args:
+        file_records: 文件中的记录列表。
+        db_state: 数据库中的状态 {ref_id: {field: embedding_hash}}。
+        fields_to_embed: 需要嵌入的字段集合。如果为 None，则嵌入所有非空字符串字段。
+
+    Returns:
+        (to_upsert_records, to_delete_ids)
+    """
+    file_map = {str(r.get("id", "")): r for r in file_records if r.get("id")}
+    to_delete_ids = set(db_state.keys()) - set(file_map.keys())
+    to_upsert_records = []
+
+    for ref_id, record in file_map.items():
+        if ref_id not in db_state:
+            to_upsert_records.append(record)
+            continue
+
+        # 检查内容是否变更
+        db_field_hashes = db_state[ref_id]
+        current_field_hashes = {}
+
+        for key, value in record.items():
+            if not isinstance(value, str) or not value.strip():
+                continue
+
+            # 如果定义了向量字段，则只检查这些字段
+            if fields_to_embed is not None and key not in fields_to_embed:
+                continue
+
+            current_field_hashes[key] = compute_text_hash(value)
+
+        if current_field_hashes != db_field_hashes:
+            to_upsert_records.append(record)
+            # 标记删除旧记录（为了重新插入）
+            to_delete_ids.add(ref_id)
+
+    return to_upsert_records, to_delete_ids
 
 
 async def _read_and_parse(file_path: Path) -> list[dict]:
@@ -357,18 +394,25 @@ async def _generate_embeddings(texts: list[str]) -> list[list[float]]:
         return []
 
 
-async def _upsert_records(table_name: str, records: list[dict]) -> None:
+async def _upsert_records(
+    table_name: str,
+    records: list[dict],
+    fields_to_embed: set[str] | None,
+) -> None:
     """批量处理新记录：生成 Embedding 并插入。
 
     Args:
         table_name: 表名。
         records: 要插入的记录列表。
+        fields_to_embed: 需要嵌入的字段集合。如果为 None，则嵌入所有非空字符串字段。
     """
     embedding_requests = []
 
     for i, record in enumerate(records):
         for key, value in record.items():
             if isinstance(value, str) and value.strip():
+                if fields_to_embed is not None and key not in fields_to_embed:
+                    continue
                 embedding_requests.append((i, key, value))
 
     if not embedding_requests:

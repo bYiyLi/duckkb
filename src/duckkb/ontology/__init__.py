@@ -8,7 +8,7 @@
 """
 
 from duckkb.ontology._models import EdgeType, NodeType, Ontology, VectorConfig
-from duckkb.ontology.engine import OntologyEngine, generate_node_ddl, generate_nodes_ddl
+from duckkb.ontology.engine import OntologyEngine
 
 __all__ = [
     "VectorConfig",
@@ -16,6 +16,4 @@ __all__ = [
     "EdgeType",
     "Ontology",
     "OntologyEngine",
-    "generate_node_ddl",
-    "generate_nodes_ddl",
 ]

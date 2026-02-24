@@ -20,15 +20,14 @@ import json
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
-import orjson
 from fastmcp import FastMCP
 from fastmcp.server.lifespan import lifespan
 
 from duckkb.config import AppContext
-from duckkb.constants import BUILD_DIR_NAME, DATA_DIR_NAME, DB_FILE_NAME, MAX_ERROR_FEEDBACK
+from duckkb.constants import BUILD_DIR_NAME, DATA_DIR_NAME, DB_FILE_NAME
 from duckkb.engine.backup import BackupManager
-from duckkb.engine.crud import add_documents
 from duckkb.engine.deleter import delete_documents
+from duckkb.engine.importer import validate_and_import_file
 from duckkb.engine.migration import MigrationManager
 from duckkb.engine.searcher import query_raw_sql as _query
 from duckkb.engine.searcher import smart_search as _search
@@ -37,7 +36,7 @@ from duckkb.engine.sync import sync_knowledge_base as _sync
 from duckkb.logger import logger
 from duckkb.schema import get_schema_info as _get_schema_info
 from duckkb.schema import init_schema
-from duckkb.utils.file_ops import file_exists, glob_files, read_file, unlink
+from duckkb.utils.file_ops import file_exists, glob_files
 from duckkb.utils.text import init_jieba_async
 
 
@@ -113,24 +112,24 @@ async def check_health() -> str:
 
 @mcp.tool()
 async def sync_knowledge_base(
-    ontology_yaml: str | None = None,
+    ontology_path: str | None = None,
     force: bool = False,
 ) -> str:
     """
     同步知识库，支持 ontology 配置变更和数据迁移。
 
     从 JSONL 数据文件导入内容到 DuckDB 数据库，包括向量化处理。
-    如果提供 ontology_yaml 参数，将进行配置校验、数据库模式迁移和数据迁移。
+    如果提供 ontology_path 参数，将进行配置校验、数据库模式迁移和数据迁移。
 
     Args:
-        ontology_yaml: 可选的新 ontology 配置（YAML 格式字符串）。
-                      如果提供，将进行：
+        ontology_path: 可选的新 ontology 配置文件路径（YAML 格式）。
+                      如果提供，将读取文件内容并进行：
             - YAML 解析与配置校验
             - 数据库模式迁移
             - 数据迁移（如需要）
             - 失败时自动回滚
 
-                      示例：
+                      示例配置文件内容：
                       ```yaml
                       nodes:
                         documents:
@@ -159,9 +158,16 @@ async def sync_knowledge_base(
     """
     ctx = AppContext.get()
 
-    if ontology_yaml:
+    if ontology_path:
+        path = Path(ontology_path)
+        if not await file_exists(path):
+            raise FileNotFoundError(f"Ontology file not found: {ontology_path}")
+
+        content = await read_file(path)
         migration_manager = MigrationManager(ctx.kb_path)
-        result = migration_manager.migrate(ontology_yaml, force=force)
+        
+        # Run migration in a separate thread to avoid blocking
+        result = await asyncio.to_thread(migration_manager.migrate, content, force=force)
         return json.dumps(result.to_dict(), ensure_ascii=False)
 
     await _sync(ctx.kb_path)
@@ -188,7 +194,12 @@ async def get_schema_info() -> str:
     Returns:
         str: 数据库模式的详细描述，包含表结构和 ER 图信息。
     """
-    return await _get_schema_info()
+    schema_info = await _get_schema_info()
+    kb_config = AppContext.get().kb_config
+
+    if kb_config.usage_instructions:
+        return f"{schema_info}\n\n{kb_config.usage_instructions}"
+    return schema_info
 
 
 @mcp.tool()
@@ -250,7 +261,7 @@ async def validate_and_import(table_name: str, temp_file_path: str) -> str:
         table_name: 目标表名（不含 .jsonl 扩展名）。
                    文件将被命名为 {table_name}.jsonl。
         temp_file_path: 临时 JSONL 文件的绝对路径。
-                       文件必须符合知识库的数据格式规范，每条记录必须包含 id 字段。
+                       文件必须符合知识库的数据格式规范。
 
     Returns:
         str: JSON 格式的操作结果，包含更新/插入统计。
@@ -259,46 +270,7 @@ async def validate_and_import(table_name: str, temp_file_path: str) -> str:
         ValueError: 当文件格式不正确或验证失败时抛出。
         FileNotFoundError: 当临时文件不存在时抛出。
     """
-    path = Path(temp_file_path)
-    if not await file_exists(path):
-        raise FileNotFoundError(f"File {temp_file_path} not found")
-
-    errors = []
-    records = []
-    try:
-        content = await read_file(path)
-        lines = content.splitlines()
-        for i, line in enumerate(lines, 1):
-            if not line.strip():
-                continue
-            try:
-                record = orjson.loads(line)
-                if not isinstance(record, dict):
-                    errors.append(f"Line {i}: Record must be a JSON object")
-                    continue
-                if "id" not in record:
-                    errors.append(f"Line {i}: Missing required field 'id'")
-                    continue
-                records.append(record)
-            except orjson.JSONDecodeError:
-                errors.append(f"Line {i}: Invalid JSON format")
-    except Exception as e:
-        raise ValueError(f"Failed to read file: {e}") from e
-
-    if errors:
-        error_msg = f"Found {len(errors)} errors:\n" + "\n".join(errors[:MAX_ERROR_FEEDBACK])
-        if len(errors) > MAX_ERROR_FEEDBACK:
-            error_msg += "\n..."
-        raise ValueError(error_msg)
-
-    result = await add_documents(table_name, records)
-
-    try:
-        await unlink(path)
-    except Exception:
-        pass
-
-    return json.dumps(result, ensure_ascii=False)
+    return await validate_and_import_file(table_name, temp_file_path)
 
 
 @mcp.tool()

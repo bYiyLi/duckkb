@@ -106,6 +106,7 @@ class KBConfig(BaseModel):
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     log_level: str = DEFAULT_LOG_LEVEL
     ontology: Ontology = Field(default_factory=Ontology)
+    usage_instructions: str | None = None
 
     @field_validator("log_level")
     @classmethod
@@ -149,6 +150,7 @@ class KBConfig(BaseModel):
                 ),
                 log_level=data.get("log_level", DEFAULT_LOG_LEVEL),
                 ontology=Ontology(**ontology_config) if ontology_config else Ontology(),
+                usage_instructions=data.get("usage_instructions"),
             )
         return cls()
 

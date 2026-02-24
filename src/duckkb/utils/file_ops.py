@@ -8,6 +8,7 @@ import asyncio
 import glob
 import os
 import tempfile
+from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,25 @@ async def read_file(file_path: str | Path, encoding: str = "utf-8") -> str:
     """
     async with aiofiles.open(file_path, encoding=encoding) as f:
         return await f.read()
+
+
+async def read_file_lines(file_path: str | Path, encoding: str = "utf-8") -> AsyncGenerator[str, None]:
+    """Asynchronously reads a file line by line.
+
+    Args:
+        file_path: The path to the file to read.
+        encoding: The encoding to use (default: "utf-8").
+
+    Yields:
+        Each line of the file.
+
+    Raises:
+        FileNotFoundError: If the file does not exist.
+        IOError: If an I/O error occurs during reading.
+    """
+    async with aiofiles.open(file_path, encoding=encoding) as f:
+        async for line in f:
+            yield line
 
 
 async def read_json(file_path: str | Path, encoding: str = "utf-8") -> Any:

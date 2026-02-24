@@ -19,20 +19,21 @@ from duckkb.utils.text import compute_text_hash, segment_text
 type SearchRow = tuple[str, str, str, str, str, list[float], str, float]
 
 
-async def add_documents(table_name: str, records: list[dict]) -> dict:
+async def add_documents(table_name: str, records: list[dict], sync_file: bool = True) -> dict:
     """
     添加或更新文档到知识库。
 
     Args:
         table_name: 表名。
         records: 记录列表，每条记录必须包含 'id' 字段。
+        sync_file: 是否同步到文件（默认 True）。批量导入时可设为 False，最后统一同步。
 
     Returns:
         操作结果统计。
     """
     validate_table_name(table_name)
     if not records:
-        return {"status": "success", "count": 0}
+        return {"status": "success", "upserted_count": 0}
 
     # 1. 验证 ID
     valid_records = []
@@ -61,8 +62,9 @@ async def add_documents(table_name: str, records: list[dict]) -> dict:
 
     if not embedding_requests:
         # 只有 ID 没有文本字段？也算成功吧，只是没索引
-        await sync_db_to_file(table_name)
-        return {"status": "success", "count": len(valid_records)}
+        if sync_file:
+            await sync_db_to_file(table_name)
+        return {"status": "success", "upserted_count": len(valid_records)}
 
     texts = [req[2] for req in embedding_requests]
 
@@ -107,7 +109,8 @@ async def add_documents(table_name: str, records: list[dict]) -> dict:
         await asyncio.to_thread(_insert_rows, rows)
 
     # 8. 回写文件
-    await sync_db_to_file(table_name)
+    if sync_file:
+        await sync_db_to_file(table_name)
 
     return {
         "status": "success",

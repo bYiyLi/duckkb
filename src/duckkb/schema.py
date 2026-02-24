@@ -13,7 +13,7 @@ from duckkb.config import AppContext
 from duckkb.constants import SCHEMA_FILE_NAME, SYS_CACHE_TABLE, SYS_SEARCH_TABLE
 from duckkb.db import get_async_db
 from duckkb.logger import logger
-from duckkb.ontology import generate_nodes_ddl
+from duckkb.ontology import OntologyEngine
 
 
 def get_sys_schema_ddl(embedding_dim: int) -> str:
@@ -215,7 +215,7 @@ async def init_schema():
         ontology = kb_config.ontology
         if ontology.nodes:
             logger.info(f"Creating tables from ontology: {list(ontology.nodes.keys())}")
-            nodes_ddl = generate_nodes_ddl(ontology)
+            nodes_ddl = OntologyEngine(ontology).generate_ddl()
             if nodes_ddl:
                 try:
                     await asyncio.to_thread(conn.execute, nodes_ddl)
@@ -249,7 +249,7 @@ async def get_schema_info() -> str:
 
     ontology = kb_config.ontology
     if ontology.nodes:
-        nodes_ddl = generate_nodes_ddl(ontology)
+        nodes_ddl = OntologyEngine(ontology).generate_ddl()
         if nodes_ddl:
             parts.append(f"-- Ontology Schema\n{nodes_ddl}\n")
     else:
