@@ -5,9 +5,8 @@ import pytest
 from duckkb.constants import DATA_DIR_NAME, SYS_SEARCH_TABLE
 from duckkb.db import get_db
 from duckkb.engine.searcher import query_raw_sql, smart_search
-from duckkb.engine.sync import sync_knowledge_base
-from duckkb.mcp.server import validate_and_import
 from duckkb.schema import init_schema
+import duckkb.mcp.server as server_module
 
 # Mock embedding to return a fixed vector
 MOCK_EMBEDDING = [0.1] * 1536
@@ -46,6 +45,7 @@ async def test_full_flow(mock_kb_path, mock_embedding):
     """Verify core flow: Init -> Sync -> Search -> Import -> Sync Again."""
 
     await init_schema()
+    manager = server_module.manager
 
     # 2. Create initial data
     data_dir = mock_kb_path / DATA_DIR_NAME
@@ -56,17 +56,12 @@ async def test_full_flow(mock_kb_path, mock_embedding):
     (data_dir / "users.jsonl").write_text(jsonl_content, encoding="utf-8")
 
     # 3. Sync
-    await sync_knowledge_base(mock_kb_path)
+    await manager.load_all()
 
     # 4. Verify DB content
     with get_db() as conn:
         count = conn.execute(f"SELECT count(*) FROM {SYS_SEARCH_TABLE}").fetchone()[0]
         # 2 records * (name, bio) = 4 rows?
-        # id is string, indexed.
-        # "name" -> "Alice" -> embedding -> row
-        # "bio" -> "Alice is..." -> embedding -> row
-        # "id" -> "1" -> embedding -> row
-        # So at least 6 rows.
         assert count > 0
 
     # 5. Search
@@ -84,15 +79,21 @@ async def test_full_flow(mock_kb_path, mock_embedding):
     temp_file = mock_kb_path / "temp_import.jsonl"
     temp_file.write_text('{"id": "3", "name": "Charlie"}', encoding="utf-8")
 
-    res = await validate_and_import("users", temp_file)
+    res = await server_module.validate_and_import("users", str(temp_file))
     assert "success" in res
 
     # Check if users.jsonl has 3 lines now
+    # Since save is async, we might need to wait or force save
+    # In test environment, async task might not finish immediately.
+    # We can wait a bit or check if DB is updated (DB update is synchronous in manager)
+    
+    # Check DB first
+    raw_after = await query_raw_sql(f"SELECT count(*) as c FROM {SYS_SEARCH_TABLE}")
+    assert raw_after[0]["c"] > count
+
+    # For file sync, it's async. We can manually call persist for verification in test
+    await manager.persister.dump_table_to_file("users")
+    
     final_content = (data_dir / "users.jsonl").read_text(encoding="utf-8")
     assert "Charlie" in final_content
     assert "Alice" in final_content
-
-    # Check if DB updated (validate_and_import triggers sync)
-    # Sync might take time or be instant? It awaits sync_knowledge_base so instant.
-    raw_after = await query_raw_sql(f"SELECT count(*) as c FROM {SYS_SEARCH_TABLE}")
-    assert raw_after[0]["c"] > count

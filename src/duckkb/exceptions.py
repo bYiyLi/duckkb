@@ -50,7 +50,7 @@ class ValidationError(DuckKBError):
     pass
 
 
-class TableNotFoundError(DuckKBError):
+class TableNotFoundError(DatabaseError):
     """表不存在异常。
 
     当尝试操作不存在的表时抛出。
@@ -61,7 +61,7 @@ class TableNotFoundError(DuckKBError):
         super().__init__(f"Table '{table_name}' not found")
 
 
-class RecordNotFoundError(DuckKBError):
+class RecordNotFoundError(DatabaseError):
     """记录不存在异常。
 
     当尝试删除或更新不存在的记录时抛出。
@@ -73,7 +73,7 @@ class RecordNotFoundError(DuckKBError):
         super().__init__(f"Records {record_ids} not found in table '{table_name}'")
 
 
-class InvalidTableNameError(DuckKBError):
+class InvalidTableNameError(ConfigurationError):
     """无效表名异常。
 
     当表名不符合命名规范时抛出。

@@ -248,6 +248,10 @@ async def query_raw_sql(sql: str) -> list[dict[str, Any]]:
     if not sql_upper.startswith("SELECT"):
         raise DatabaseError("Only SELECT queries are allowed.")
 
+    sql_no_comments = re.sub(r"--.*$", "", sql_stripped, flags=re.MULTILINE)
+    sql_no_comments = re.sub(r"/\*.*?\*/", "", sql_no_comments, flags=re.DOTALL)
+    sql_no_comments_upper = sql_no_comments.upper()
+
     forbidden = [
         "INSERT",
         "UPDATE",
@@ -274,7 +278,7 @@ async def query_raw_sql(sql: str) -> list[dict[str, Any]]:
         "ROLLBACK",
     ]
     forbidden_pattern = r"\b(" + "|".join(forbidden) + r")\b"
-    if re.search(forbidden_pattern, sql_upper):
+    if re.search(forbidden_pattern, sql_no_comments_upper):
         raise DatabaseError("Forbidden keyword in SQL query.")
 
     if not re.search(r"\bLIMIT\s+\d+", sql_upper):

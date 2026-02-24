@@ -21,24 +21,36 @@ import json
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
+import orjson
 from fastmcp import FastMCP
 from fastmcp.server.lifespan import lifespan
 
 from duckkb.config import AppContext
-from duckkb.constants import BUILD_DIR_NAME, DATA_DIR_NAME, DB_FILE_NAME
+from duckkb.constants import (
+    BUILD_DIR_NAME,
+    DATA_DIR_NAME,
+    DB_FILE_NAME,
+    MAX_ERROR_FEEDBACK,
+)
 from duckkb.engine.backup import BackupManager
-from duckkb.engine.deleter import delete_documents
-from duckkb.engine.importer import validate_and_import_file
+from duckkb.engine.core.manager import KnowledgeBaseManager
 from duckkb.engine.migration import MigrationManager
 from duckkb.engine.searcher import query_raw_sql as _query
 from duckkb.engine.searcher import smart_search as _search
-from duckkb.engine.sync import persist_all_tables
-from duckkb.engine.sync import sync_knowledge_base as _sync
 from duckkb.logger import logger
 from duckkb.schema import get_schema_info as _get_schema_info
 from duckkb.schema import init_schema
-from duckkb.utils.file_ops import file_exists, glob_files, read_file
+from duckkb.utils.file_ops import (
+    file_exists,
+    glob_files,
+    read_file,
+    read_file_lines,
+    unlink,
+)
 from duckkb.utils.text import init_jieba_async
+
+# Global manager instance
+manager: KnowledgeBaseManager | None = None
 
 
 @lifespan
@@ -53,13 +65,15 @@ async def kb_lifespan(server: FastMCP) -> AsyncGenerator[dict[str, Path], None]:
     Yields:
         包含知识库路径的上下文字典。
     """
+    global manager
     ctx = AppContext.get()
+    manager = KnowledgeBaseManager(ctx.kb_path)
 
     logger.info("Initializing knowledge base...")
     try:
         await init_schema()
         await init_jieba_async()
-        await _sync(ctx.kb_path)
+        await manager.load_all()
         logger.info("Knowledge base initialized successfully.")
     except Exception as e:
         logger.error(f"Knowledge base initialization failed: {e}")
@@ -69,7 +83,7 @@ async def kb_lifespan(server: FastMCP) -> AsyncGenerator[dict[str, Path], None]:
 
     logger.info("Persisting knowledge base to disk...")
     try:
-        results = await persist_all_tables(ctx.kb_path)
+        results = await manager.persister.persist_all_tables()
         persisted = sum(1 for v in results.values() if v >= 0)
         logger.info(f"Knowledge base persisted: {persisted} tables saved.")
     except Exception as e:
@@ -158,6 +172,9 @@ async def sync_knowledge_base(
         str: JSON 格式的操作结果，包含迁移统计和状态。
     """
     ctx = AppContext.get()
+    global manager
+    if not manager:
+        raise RuntimeError("Manager not initialized")
 
     if ontology_path:
         path = Path(ontology_path)
@@ -171,9 +188,9 @@ async def sync_knowledge_base(
         result = await asyncio.to_thread(migration_manager.migrate, content, force=force)
         return json.dumps(result.to_dict(), ensure_ascii=False)
 
-    await _sync(ctx.kb_path)
+    await manager.load_all()
 
-    results = await persist_all_tables(ctx.kb_path)
+    results = await manager.persister.persist_all_tables()
     return json.dumps(
         {
             "status": "success",
@@ -271,7 +288,104 @@ async def validate_and_import(table_name: str, temp_file_path: str) -> str:
         ValueError: 当文件格式不正确或验证失败时抛出。
         FileNotFoundError: 当临时文件不存在时抛出。
     """
-    return await validate_and_import_file(table_name, temp_file_path)
+    global manager
+    if not manager:
+        raise RuntimeError("Manager not initialized")
+
+    path = Path(temp_file_path)
+    if not await file_exists(path):
+        raise FileNotFoundError(f"File {temp_file_path} not found")
+
+    BATCH_SIZE = 100
+    errors = []
+
+    # Get schema for validation
+    schema = None
+    if manager.ontology_engine and manager.ontology_engine.ontology and manager.ontology_engine.ontology.nodes:
+        # Check if table_name matches any node's table property
+        # The key in nodes dict is node type name, not necessarily table name.
+        # But usually they match or we need to find by table name.
+        node = manager.ontology_engine.get_node_by_table(table_name)
+        if node and node.json_schema:
+            schema = node.json_schema
+
+    # Pass 1: Validation
+    try:
+        line_num = 0
+        async for line in read_file_lines(path):
+            line_num += 1
+            if not line.strip():
+                continue
+
+            if len(errors) >= MAX_ERROR_FEEDBACK:
+                break
+
+            try:
+                record = orjson.loads(line)
+                if not isinstance(record, dict):
+                    errors.append(f"Line {line_num}: Record must be a JSON object")
+                    continue
+                if "id" not in record:
+                    errors.append(f"Line {line_num}: Missing required field 'id'")
+                    continue
+
+                # Schema validation
+                if schema and "required" in schema:
+                    missing = [f for f in schema["required"] if f not in record]
+                    if missing:
+                        errors.append(f"Line {line_num}: Missing required fields {missing}")
+                        continue
+            except orjson.JSONDecodeError:
+                errors.append(f"Line {line_num}: Invalid JSON format")
+
+    except Exception as e:
+        raise ValueError(f"Failed to read file during validation: {e}") from e
+
+    if errors:
+        error_msg = f"Found {len(errors)} errors:\n" + "\n".join(errors[:MAX_ERROR_FEEDBACK])
+        if len(errors) >= MAX_ERROR_FEEDBACK:
+            error_msg += "\n..."
+        raise ValueError(error_msg)
+
+    # Pass 2: Import using Manager
+    total_upserted = 0
+    buffer = []
+
+    try:
+        async for line in read_file_lines(path):
+            if not line.strip():
+                continue
+
+            record = orjson.loads(line)
+            buffer.append(record)
+
+            if len(buffer) >= BATCH_SIZE:
+                res = await manager.add_documents(table_name, buffer)
+                total_upserted += res.get("upserted_count", 0)
+                buffer = []
+
+        # Process remaining
+        if buffer:
+            res = await manager.add_documents(table_name, buffer)
+            total_upserted += res.get("upserted_count", 0)
+
+    except Exception as e:
+        raise ValueError(f"Failed to import data: {e}") from e
+    finally:
+        try:
+            await unlink(path)
+        except Exception as e:
+            logger.warning(f"Failed to cleanup temp file: {e}")
+
+    return json.dumps(
+        {
+            "status": "success",
+            "table_name": table_name,
+            "upserted_count": total_upserted,
+            "message": f"Successfully upserted {total_upserted} records",
+        },
+        ensure_ascii=False,
+    )
 
 
 @mcp.tool()
@@ -292,7 +406,11 @@ async def delete_records(table_name: str, record_ids: list[str]) -> str:
         ValueError: 当参数无效时抛出。
         FileNotFoundError: 当表不存在时抛出。
     """
-    result = await delete_documents(table_name, record_ids)
+    global manager
+    if not manager:
+        raise RuntimeError("Manager not initialized")
+
+    result = await manager.delete_documents(table_name, record_ids)
     return json.dumps(result, ensure_ascii=False)
 
 
