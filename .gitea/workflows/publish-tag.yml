@@ -1,0 +1,82 @@
+name: 1. Publish on Tag
+
+# 触发器：只在 v* 标签被推送时运行
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-publish-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. Checkout Code (Full History)
+        uses: actions/checkout@v4
+        with:
+          # 必须设置为 0 (full clone)
+          # 你的 Makefile build 需要完整的 git 历史来找到 tag
+          fetch-depth: 0
+
+      - name: 2. Publish Release Package
+        uses: docker://ghcr.io/astral-sh/uv:python3.12-bookworm
+        env:
+          UV_PUBLISH_USERNAME: ${{ secrets.UV_PUBLISH_USERNAME }}
+          UV_PUBLISH_PASSWORD: ${{ secrets.UV_PUBLISH_PASSWORD }}
+        with:
+          entrypoint: make
+          args: publish-ci
+      - name: 3. Get Commit Details
+        id: commit_details
+        run: |
+          OUTPUT_FILE=${GITEA_OUTPUT:-$GITHUB_OUTPUT}
+          
+          # 使用 git log 和 git rev-parse 来获取信息
+          # %an = 作者名字
+          # %s  = Commit 消息 (仅标题行)
+          # %h  = 短 SHA
+          
+          echo "COMMIT_AUTHOR=$(git log -1 --pretty=%an)" >> $OUTPUT_FILE
+          echo "COMMIT_SHA_SHORT=$(git rev-parse --short HEAD)" >> $OUTPUT_FILE
+          echo "COMMIT_MSG=$(git log -1 --pretty=%s)" >> $OUTPUT_FILE
+
+      - name: 4. Send Matrix Notification
+        uses: s3krit/matrix-message-action@v0.0.3
+        with:
+          room_id: ${{ secrets.MATRIX_ROOM_ID }}
+          access_token: ${{ secrets.MATRIX_ACCESS_TOKEN }}
+          server: ${{ secrets.MATRIX_HOMESERVER }}
+
+          # 只能使用 message 字段，所有内容都是纯文本
+          # 我们用 "---" 作为分隔符来排版
+          message: |
+            <p>
+              <h3>🚀 [${{ gitea.repository }}] 版本 ${{ github.ref_name }} 发布成功!</h3>
+            </p>
+            <p>
+              <strong>作者:</strong> &nbsp; ${{ steps.commit_details.outputs.COMMIT_AUTHOR }}<br>
+              <strong>Commit:</strong> <code>${{ steps.commit_details.outputs.COMMIT_SHA_SHORT }}</code><br>
+              <strong>消息:</strong> &nbsp; ${{ steps.commit_details.outputs.COMMIT_MSG }}
+            </p>
+            <p>
+              <a href="https://gitea.y2l.top/${{ gitea.repository }}/actions/runs/${{ gitea.run_number }}">👉 查看工作流 #${{ gitea.run_number }}</a><br>
+              <a href="https://gitea.y2l.top/${{ gitea.repository }}/commit/${{ gitea.sha }}">👉 查看 Commit 详情</a>
+            </p>
+            
+      - name: 5. Send Matrix Notification (Failure)
+        if: failure()
+        uses: s3krit/matrix-message-action@v0.0.3
+        with:
+          room_id: ${{ secrets.MATRIX_ROOM_ID }}
+          access_token: ${{ secrets.MATRIX_ACCESS_TOKEN }}
+          server: ${{ secrets.MATRIX_HOMESERVER }}
+          message: |
+            <p>
+              <h3>❌ [${{ gitea.repository }}] 版本 ${{ github.ref_name }} 发布失败!</h3>
+            </p>
+            <p>
+              <strong>作者:</strong> &nbsp; ${{ steps.commit_details.outputs.COMMIT_AUTHOR }}<br>
+              <strong>Commit:</strong> <code>${{ steps.commit_details.outputs.COMMIT_SHA_SHORT }}</code>
+            </p>
+            <p>
+              <a href="https://gitea.y2l.top/${{ gitea.repository }}/actions/runs/${{ gitea.run_number }}">🔥 查看失败详情 #${{ gitea.run_number }}</a>
+            </p>

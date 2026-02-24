@@ -1,5 +1,7 @@
 import pytest
+
 from duckkb.config import settings
+
 
 @pytest.fixture
 def mock_kb_path(tmp_path):

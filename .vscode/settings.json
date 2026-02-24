@@ -1,0 +1,54 @@
+{
+    "terminal.integrated.detectLocale": "auto",
+    "python.experiments.optOutFrom": [],
+    "terminal.integrated.fontFamily": "FiraMono Nerd Font Mono",
+    "terminal.integrated.defaultProfile.osx": "zsh",
+    "terminal.integrated.inheritEnv": true,
+    "[python]": {
+        // 设置 Ruff 为默认格式化工具
+        // 对应命令: ruff format
+        "editor.defaultFormatter": "charliermarsh.ruff",
+        // 保存时自动格式化
+        "editor.formatOnSave": true,
+        // 保存时自动修复所有 Lint 问题 (比如删除未使用的导入)
+        // 对应命令: ruff check --fix
+        "editor.codeActionsOnSave": {
+            "source.fixAll": "explicit",
+            "source.organizeImports": "explicit"
+        }
+    },
+    "continue.enableNextEdit": false,
+    "editor.codeActionsOnSave": {
+        "source.fixAll.ruff": "explicit",
+        "source.organizeImports.ruff": "explicit"
+    },
+    "editor.formatOnSave": true,
+    "editor.semanticHighlighting.enabled": true,
+    "files.exclude": {
+        "**/.mypy_cache": true,
+        "**/.pytest_cache": true,
+        "**/.ruff_cache": true,
+        "**/__pycache__": true
+    },
+    "git.autofetch": true,
+    "locale": "zh-cn",
+    "mypy-type-checker.enabled": true,
+    "mypy-type-checker.runUsingActiveInterpreter": true,
+    "pyright.enable": true,
+    "python.languageServer": "None",
+    "ruff.nativeServer": "on",
+    "workbench.colorTheme": "Dark",
+    "window.menuBarVisibility": "classic",
+    "makefile.configureOnOpen": true,
+    "[makefile]": {
+        "editor.insertSpaces": true
+    },
+    "workbench.iconTheme": "material-icon-theme",
+    "geminicodeassist.displayInlineContextHint": false,
+    "python.testing.pytestArgs": [
+        "tests"
+    ],
+    "python.testing.unittestEnabled": false,
+    "python.testing.pytestEnabled": true,
+    "python.defaultInterpreterPath": ".venv/bin/python"
+}

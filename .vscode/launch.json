@@ -1,0 +1,75 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "mac run",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "versa.cli",
+            "console": "integratedTerminal",
+            "args": [
+                "./demo/demo.yaml"
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "win run",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "versa.cli",
+            "console": "integratedTerminal",
+            "args": [
+                ".\\demo\\demo.yaml",
+                "--transport",
+                "sse"
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "type": "node",
+            "request": "launch",
+            "name": "MAC 启动 MCP 检查器",
+            "runtimeExecutable": "npx",
+            "runtimeArgs": [
+                "-y",
+                "@modelcontextprotocol/inspector",
+                "uv",
+                "run",
+                "python",
+                "-m",
+                "versa.cli",
+                "./demo/demo.yaml"
+            ],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "type": "node",
+            "request": "launch",
+            "name": "WIN 启动 MCP 检查器",
+            "runtimeExecutable": "npx",
+            "runtimeArgs": [
+                "-y",
+                "@modelcontextprotocol/inspector",
+                "uv",
+                "run",
+                "python",
+                "-m",
+                "versa.cli",
+                ".\\\\demo\\\\demo.yaml"
+            ],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        }
+    ]
+}
