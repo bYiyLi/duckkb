@@ -2,7 +2,7 @@ from datetime import datetime
 
 import pytest
 
-from duckkb.ontology._validator import validate_json_by_schema
+from duckkb.database.engine.ontology._validator import validate_json_by_schema
 
 
 class TestValidator:

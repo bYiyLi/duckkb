@@ -8,11 +8,11 @@ import orjson
 
 from duckkb.config import AppContext
 from duckkb.constants import SYS_SEARCH_TABLE, SearchRow, validate_table_name
-from duckkb.db import get_db
-from duckkb.engine.core.loader import DataLoader
-from duckkb.engine.core.persister import DataPersister
+from duckkb.database.connection import get_db
+from duckkb.database.engine.loader import DataLoader
+from duckkb.database.persister import DataPersister
 from duckkb.logger import logger
-from duckkb.ontology import OntologyEngine
+from duckkb.database.engine.ontology import OntologyEngine
 from duckkb.utils.embedding import get_embeddings
 from duckkb.utils.text import compute_text_hash, segment_text
 

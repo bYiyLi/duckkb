@@ -15,7 +15,7 @@ from duckkb.constants import (
     QUERY_DEFAULT_LIMIT,
     QUERY_RESULT_SIZE_LIMIT,
 )
-from duckkb.db import get_db
+from duckkb.database.connection import get_db
 from duckkb.exceptions import DatabaseError
 from duckkb.logger import logger
 from duckkb.utils.embedding import get_embedding

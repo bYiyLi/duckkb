@@ -1,6 +1,6 @@
 import pytest
 
-from duckkb.schema import get_schema_info, get_sys_schema_ddl, init_schema
+from duckkb.database.schema import get_schema_info, get_sys_schema_ddl, init_schema
 
 
 class TestSchema:

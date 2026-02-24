@@ -1,7 +1,7 @@
 import pytest
 
+from duckkb.database.schema import init_schema
 from duckkb.mcp.server import validate_and_import
-from duckkb.schema import init_schema
 from duckkb.utils.file_ops import read_jsonl
 
 

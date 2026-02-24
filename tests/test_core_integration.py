@@ -3,9 +3,9 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from duckkb.constants import DATA_DIR_NAME, SYS_SEARCH_TABLE
-from duckkb.db import get_db
-from duckkb.engine.searcher import query_raw_sql, smart_search
-from duckkb.schema import init_schema
+from duckkb.database.connection import get_db
+from duckkb.database.schema import init_schema
+from duckkb.database.engine.search import query_raw_sql, smart_search
 import duckkb.mcp.server as server_module
 
 # Mock embedding to return a fixed vector

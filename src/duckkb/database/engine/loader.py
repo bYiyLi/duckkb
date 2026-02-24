@@ -15,11 +15,11 @@ from duckkb.constants import (
     SearchRow,
     validate_table_name,
 )
-from duckkb.db import get_db
-from duckkb.engine.cache import clean_cache
+from duckkb.database.connection import get_db
+from duckkb.database.engine.cache import clean_cache
 from duckkb.exceptions import InvalidTableNameError
 from duckkb.logger import logger
-from duckkb.ontology import OntologyEngine
+from duckkb.database.engine.ontology import OntologyEngine
 from duckkb.utils.embedding import get_embeddings
 from duckkb.utils.file_ops import (
     dir_exists,

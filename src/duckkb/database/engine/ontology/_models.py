@@ -12,7 +12,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from duckkb.constants import DEFAULT_METRIC, VALID_METRICS
-from duckkb.ontology._validator import _validate_schema_structure
+from duckkb.database.engine.ontology._validator import _validate_schema_structure
 
 
 class VectorConfig(BaseModel):

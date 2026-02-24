@@ -24,7 +24,7 @@ from duckkb.constants import (
     VALID_EMBEDDING_DIMS,
     VALID_LOG_LEVELS,
 )
-from duckkb.ontology import Ontology
+from duckkb.database.engine.ontology import Ontology
 
 
 class GlobalConfig(BaseModel):

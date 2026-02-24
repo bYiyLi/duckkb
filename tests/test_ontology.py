@@ -1,6 +1,6 @@
 import pytest
 
-from duckkb.ontology import (
+from duckkb.database.engine.ontology import (
     EdgeType,
     NodeType,
     Ontology,

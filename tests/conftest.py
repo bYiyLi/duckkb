@@ -1,7 +1,7 @@
 import pytest
 
 from duckkb.config import AppContext
-from duckkb.engine.core.manager import KnowledgeBaseManager
+from duckkb.database.engine.manager import KnowledgeBaseManager
 import duckkb.mcp.server as server_module
 
 

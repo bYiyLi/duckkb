@@ -11,9 +11,9 @@ import re
 
 from duckkb.config import AppContext
 from duckkb.constants import SCHEMA_FILE_NAME, SYS_CACHE_TABLE, SYS_SEARCH_TABLE
-from duckkb.db import get_async_db
+from duckkb.database.connection import get_async_db
 from duckkb.logger import logger
-from duckkb.ontology import OntologyEngine
+from duckkb.database.engine.ontology import OntologyEngine
 
 
 def get_sys_schema_ddl(embedding_dim: int) -> str:

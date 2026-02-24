@@ -1,6 +1,6 @@
 import pytest
 
-from duckkb.engine.searcher import query_raw_sql
+from duckkb.database.engine.search import query_raw_sql
 from duckkb.exceptions import DatabaseError
 
 
@@ -65,7 +65,7 @@ class TestSQLSecurity:
 
         from duckkb.constants import QUERY_DEFAULT_LIMIT
 
-        with patch("duckkb.engine.searcher.get_db") as mock_get_db:
+        with patch("duckkb.database.engine.search.get_db") as mock_get_db:
             mock_conn = MagicMock()
             mock_conn.execute.return_value.description = [("id",), ("name",)]
             mock_conn.execute.return_value.fetchall.return_value = []
@@ -81,7 +81,7 @@ class TestSQLSecurity:
         import asyncio
         from unittest.mock import MagicMock, patch
 
-        with patch("duckkb.engine.searcher.get_db") as mock_get_db:
+        with patch("duckkb.database.engine.search.get_db") as mock_get_db:
             mock_conn = MagicMock()
             mock_conn.execute.return_value.description = [("id",), ("name",)]
             mock_conn.execute.return_value.fetchall.return_value = []

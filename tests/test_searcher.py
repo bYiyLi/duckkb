@@ -1,15 +1,15 @@
 import pytest
 
 from duckkb.constants import SYS_SEARCH_TABLE
-from duckkb.db import get_db
-from duckkb.engine.searcher import (
+from duckkb.database.connection import get_db
+from duckkb.database.schema import init_schema
+from duckkb.database.engine.search import (
     PREFETCH_MULTIPLIER,
     _build_hybrid_query,
     _execute_search_query,
     _process_search_results,
     smart_search,
 )
-from duckkb.schema import init_schema
 
 
 class TestSearcher:

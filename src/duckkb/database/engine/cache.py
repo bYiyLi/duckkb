@@ -6,7 +6,7 @@
 import asyncio
 
 from duckkb.constants import CACHE_EXPIRE_DAYS
-from duckkb.db import get_db
+from duckkb.database.connection import get_db
 from duckkb.logger import logger
 
 

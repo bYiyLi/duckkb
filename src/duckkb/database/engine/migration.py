@@ -10,10 +10,10 @@ import yaml
 
 from duckkb.config import AppContext
 from duckkb.constants import SYS_SEARCH_TABLE
-from duckkb.db import get_db
-from duckkb.engine.backup import BackupManager
+from duckkb.database.connection import get_db
+from duckkb.database.engine.backup import BackupManager
 from duckkb.logger import logger
-from duckkb.ontology import Ontology, OntologyEngine
+from duckkb.database.engine.ontology import Ontology, OntologyEngine
 
 
 class MigrationError(Exception):

@@ -10,7 +10,7 @@ from duckkb.constants import (
     DB_FILE_NAME,
     MAX_BACKUPS,
 )
-from duckkb.engine.backup import BackupManager
+from duckkb.database.engine.backup import BackupManager
 
 
 class TestBackupManager:

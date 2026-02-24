@@ -7,8 +7,8 @@
 - DDL 自动生成
 """
 
-from duckkb.ontology._models import EdgeType, NodeType, Ontology, VectorConfig
-from duckkb.ontology.engine import OntologyEngine
+from duckkb.database.engine.ontology._models import EdgeType, NodeType, Ontology, VectorConfig
+from duckkb.database.engine.ontology.engine import OntologyEngine
 
 __all__ = [
     "VectorConfig",

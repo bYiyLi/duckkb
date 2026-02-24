@@ -1,9 +1,9 @@
 import pytest
 
 from duckkb.constants import SYS_CACHE_TABLE
-from duckkb.db import get_db
-from duckkb.engine.cache import _execute_gc, clean_cache
-from duckkb.schema import init_schema
+from duckkb.database.connection import get_db
+from duckkb.database.schema import init_schema
+from duckkb.database.engine.cache import _execute_gc, clean_cache
 
 
 class TestCache:

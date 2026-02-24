@@ -12,7 +12,7 @@ from duckkb.constants import (
     SYNC_STATE_FILE,
     SYS_SEARCH_TABLE,
 )
-from duckkb.db import get_db
+from duckkb.database.connection import get_db
 from duckkb.logger import logger
 from duckkb.utils.file_ops import (
     atomic_write_file,

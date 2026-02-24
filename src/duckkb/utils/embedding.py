@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 
 from duckkb.config import get_kb_config, get_openai_client
 from duckkb.constants import SYS_CACHE_TABLE
-from duckkb.db import get_db
+from duckkb.database.connection import get_db
 from duckkb.logger import logger
 from duckkb.utils.text import compute_text_hash
 

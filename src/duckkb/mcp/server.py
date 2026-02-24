@@ -32,14 +32,14 @@ from duckkb.constants import (
     DB_FILE_NAME,
     MAX_ERROR_FEEDBACK,
 )
-from duckkb.engine.backup import BackupManager
-from duckkb.engine.core.manager import KnowledgeBaseManager
-from duckkb.engine.migration import MigrationManager
-from duckkb.engine.searcher import query_raw_sql as _query
-from duckkb.engine.searcher import smart_search as _search
+from duckkb.database.schema import get_schema_info as _get_schema_info
+from duckkb.database.schema import init_schema
+from duckkb.database.engine.backup import BackupManager
+from duckkb.database.engine.manager import KnowledgeBaseManager
+from duckkb.database.engine.migration import MigrationManager
+from duckkb.database.engine.search import query_raw_sql as _query
+from duckkb.database.engine.search import smart_search as _search
 from duckkb.logger import logger
-from duckkb.schema import get_schema_info as _get_schema_info
-from duckkb.schema import init_schema
 from duckkb.utils.file_ops import (
     file_exists,
     glob_files,
