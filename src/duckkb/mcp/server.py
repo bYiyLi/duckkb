@@ -17,16 +17,18 @@ DuckKB MCP 服务模块
 import json
 from pathlib import Path
 
+import orjson
 from fastmcp import FastMCP
 
 from duckkb.config import AppContext
-from duckkb.constants import BUILD_DIR_NAME, DATA_DIR_NAME, DB_FILE_NAME
-from duckkb.engine.deleter import delete_records as _delete_records
-from duckkb.engine.importer import validate_and_import as _validate
+from duckkb.constants import BUILD_DIR_NAME, DATA_DIR_NAME, DB_FILE_NAME, MAX_ERROR_FEEDBACK
+from duckkb.engine.crud import add_documents
+from duckkb.engine.deleter import delete_documents
 from duckkb.engine.searcher import query_raw_sql as _query
 from duckkb.engine.searcher import smart_search as _search
 from duckkb.engine.sync import sync_knowledge_base as _sync
 from duckkb.schema import get_schema_info as _get_schema_info
+from duckkb.utils.file_ops import file_exists, glob_files, read_file, unlink
 
 mcp = FastMCP("DuckKB")
 
@@ -50,14 +52,15 @@ async def check_health() -> str:
     db_path = ctx.kb_path / BUILD_DIR_NAME / DB_FILE_NAME
     data_dir = ctx.kb_path / DATA_DIR_NAME
 
-    data_files = list(data_dir.glob("*.jsonl")) if data_dir.exists() else []
+    data_files = await glob_files(str(data_dir / "*.jsonl"))
+    db_exists_flag = await file_exists(db_path)
 
     status = {
         "status": "healthy",
         "kb_path": str(ctx.kb_path),
-        "db_exists": db_path.exists(),
+        "db_exists": db_exists_flag,
         "data_files_count": len(data_files),
-        "data_files": [f.stem for f in data_files],
+        "data_files": [Path(f).stem for f in data_files],
     }
     return json.dumps(status, ensure_ascii=False)
 
@@ -159,7 +162,47 @@ async def validate_and_import(table_name: str, temp_file_path: str) -> str:
         ValueError: 当文件格式不正确或验证失败时抛出。
         FileNotFoundError: 当临时文件不存在时抛出。
     """
-    return await _validate(table_name, Path(temp_file_path))
+    path = Path(temp_file_path)
+    if not await file_exists(path):
+        raise FileNotFoundError(f"File {temp_file_path} not found")
+
+    errors = []
+    records = []
+    try:
+        content = await read_file(path)
+        lines = content.splitlines()
+        for i, line in enumerate(lines, 1):
+            if not line.strip():
+                continue
+            try:
+                record = orjson.loads(line)
+                if not isinstance(record, dict):
+                    errors.append(f"Line {i}: Record must be a JSON object")
+                    continue
+                if "id" not in record:
+                    errors.append(f"Line {i}: Missing required field 'id'")
+                    continue
+                records.append(record)
+            except orjson.JSONDecodeError:
+                errors.append(f"Line {i}: Invalid JSON format")
+    except Exception as e:
+        raise ValueError(f"Failed to read file: {e}") from e
+
+    if errors:
+        error_msg = f"Found {len(errors)} errors:\n" + "\n".join(errors[:MAX_ERROR_FEEDBACK])
+        if len(errors) > MAX_ERROR_FEEDBACK:
+            error_msg += "\n..."
+        raise ValueError(error_msg)
+
+    result = await add_documents(table_name, records)
+    
+    # 删除临时文件
+    try:
+        await unlink(path)
+    except Exception:
+        pass
+        
+    return json.dumps(result, ensure_ascii=False)
 
 
 @mcp.tool()
@@ -180,5 +223,5 @@ async def delete_records(table_name: str, record_ids: list[str]) -> str:
         ValueError: 当参数无效时抛出。
         FileNotFoundError: 当表不存在时抛出。
     """
-    result = await _delete_records(table_name, record_ids)
+    result = await delete_documents(table_name, record_ids)
     return json.dumps(result, ensure_ascii=False)

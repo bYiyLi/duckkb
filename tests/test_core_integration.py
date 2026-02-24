@@ -4,9 +4,9 @@ import pytest
 
 from duckkb.constants import DATA_DIR_NAME, SYS_SEARCH_TABLE
 from duckkb.db import get_db
-from duckkb.engine.importer import validate_and_import
 from duckkb.engine.searcher import query_raw_sql, smart_search
 from duckkb.engine.sync import sync_knowledge_base
+from duckkb.mcp.server import validate_and_import
 from duckkb.schema import init_schema
 
 # Mock embedding to return a fixed vector

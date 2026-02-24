@@ -34,6 +34,11 @@ EMBEDDING_MODEL_DIMS: dict[str, int] = {
     "text-embedding-ada-002": 1536,
 }
 
+DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
+DEFAULT_EMBEDDING_DIM = 1536
+DEFAULT_LOG_LEVEL = "INFO"
+CONFIG_FILE_NAME = "config.yaml"
+
 VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 
 TABLE_NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")

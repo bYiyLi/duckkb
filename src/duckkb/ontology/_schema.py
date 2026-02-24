@@ -68,10 +68,6 @@ ONTOLOGY_META_SCHEMA: dict[str, Any] = {
                 "additionalProperties": False,
             },
         },
-        "structs": {
-            "type": "object",
-            "description": "Shared schema definitions, referenced via $ref",
-        },
     },
     "required": [],
     "additionalProperties": False,

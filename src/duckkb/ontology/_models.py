@@ -9,7 +9,9 @@
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from duckkb.ontology._validator import _validate_schema_structure
 
 
 class VectorConfig(BaseModel):
@@ -78,7 +80,7 @@ class NodeType(BaseModel):
     """
 
     table: str
-    identity: list[str] = Field(default_factory=list)
+    identity: list[str] = Field(...)
     json_schema: dict[str, Any] | None = Field(default=None, alias="schema")
     vectors: dict[str, VectorConfig] | None = None
     model_config = ConfigDict(extra="forbid")
@@ -98,7 +100,7 @@ class NodeType(BaseModel):
             ValueError: 标识字段列表为空时抛出。
         """
         if not v:
-            raise ValueError("identity required")
+            raise ValueError("identity must not be empty")
         return v
 
     @field_validator("table")
@@ -118,6 +120,24 @@ class NodeType(BaseModel):
         if not v or not v.strip():
             raise ValueError("table name required")
         return v.strip()
+
+    @field_validator("json_schema")
+    @classmethod
+    def validate_json_schema(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
+        """验证 JSON Schema 结构。
+
+        Args:
+            v: 待验证的 JSON Schema。
+
+        Returns:
+            验证通过的 JSON Schema。
+
+        Raises:
+            ValueError: Schema 结构不合法时抛出。
+        """
+        if v is not None:
+            _validate_schema_structure(v, "schema")
+        return v
 
 
 class EdgeType(BaseModel):
@@ -159,19 +179,52 @@ class EdgeType(BaseModel):
             raise ValueError(f"cardinality must be one of: {valid_cardinalities}")
         return v
 
+    @field_validator("json_schema")
+    @classmethod
+    def validate_json_schema(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
+        """验证 JSON Schema 结构。
+
+        Args:
+            v: 待验证的 JSON Schema。
+
+        Returns:
+            验证通过的 JSON Schema。
+
+        Raises:
+            ValueError: Schema 结构不合法时抛出。
+        """
+        if v is not None:
+            _validate_schema_structure(v, "schema")
+        return v
+
 
 class Ontology(BaseModel):
     """本体定义。
 
-    本体定义了知识库的完整结构，包括可复用结构、节点类型和边类型。
+    本体定义了知识库的完整结构，包括节点类型和边类型。
 
     Attributes:
-        structs: 可复用结构定义（类似 mixin）。
         nodes: 节点类型定义。
         edges: 边类型定义。
     """
 
-    structs: dict[str, Any] = Field(default_factory=dict)
     nodes: dict[str, NodeType] = Field(default_factory=dict)
     edges: dict[str, EdgeType] = Field(default_factory=dict)
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def validate_edge_references(self) -> "Ontology":
+        """验证边引用的节点类型是否存在。
+
+        Returns:
+            验证通过的本体实例。
+
+        Raises:
+            ValueError: 边引用的节点类型不存在时抛出。
+        """
+        for edge_name, edge in self.edges.items():
+            if edge.from_ not in self.nodes:
+                raise ValueError(f"Edge '{edge_name}' references unknown node type '{edge.from_}'")
+            if edge.to not in self.nodes:
+                raise ValueError(f"Edge '{edge_name}' references unknown node type '{edge.to}'")
+        return self

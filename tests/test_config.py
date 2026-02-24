@@ -116,4 +116,3 @@ def test_ontology_default():
     ontology = Ontology()
     assert ontology.nodes == {}
     assert ontology.edges == {}
-    assert ontology.structs == {}

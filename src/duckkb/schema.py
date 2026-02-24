@@ -32,10 +32,13 @@ CREATE TABLE IF NOT EXISTS {SYS_SEARCH_TABLE} (
     source_field VARCHAR,
     segmented_text TEXT,
     embedding_id VARCHAR,
+    embedding FLOAT[{embedding_dim}],
     metadata JSON,
     priority_weight FLOAT DEFAULT 1.0,
     PRIMARY KEY (ref_id, source_table, source_field)
 );
+
+CREATE INDEX IF NOT EXISTS idx_vec ON {SYS_SEARCH_TABLE} USING HNSW (embedding) WITH (metric = 'cosine');
 
 CREATE TABLE IF NOT EXISTS {SYS_CACHE_TABLE} (
     content_hash VARCHAR PRIMARY KEY,
@@ -183,6 +186,26 @@ async def init_schema():
     sys_schema_ddl = get_sys_schema_ddl(kb_config.EMBEDDING_DIM)
 
     async with get_async_db(read_only=False) as conn:
+        # Install and load vss extension for vector search
+        try:
+            await asyncio.to_thread(conn.execute, "INSTALL vss; LOAD vss;")
+        except Exception as e:
+            logger.warning(f"Failed to load vss extension: {e}. Vector search might not work.")
+
+        # Check if embedding column exists and add if missing (migration)
+        try:
+            # DuckDB specific: check columns
+            cursor = conn.execute(f"PRAGMA table_info('{SYS_SEARCH_TABLE}')")
+            columns = [row[1] for row in cursor.fetchall()]
+            if "embedding" not in columns:
+                logger.info(f"Migrating schema: Adding embedding column to {SYS_SEARCH_TABLE}")
+                conn.execute(
+                    f"ALTER TABLE {SYS_SEARCH_TABLE} ADD COLUMN embedding FLOAT[{kb_config.EMBEDDING_DIM}]"
+                )
+        except Exception:
+            # Table might not exist yet, which is fine
+            pass
+
         await asyncio.to_thread(conn.execute, sys_schema_ddl)
         logger.debug("System tables ensured.")
 

@@ -4,12 +4,16 @@
 提供中文分词和文本哈希计算功能，用于文本预处理和缓存键生成。
 """
 
+import asyncio
 import hashlib
+import threading
 
 import jieba
 
 from duckkb.config import AppContext
 from duckkb.logger import logger
+
+_jieba_lock = threading.Lock()
 
 
 def _init_jieba() -> None:
@@ -21,20 +25,29 @@ def _init_jieba() -> None:
 
     Note:
         使用 AppContext 的 jieba_initialized 标志确保词典只加载一次，
-        避免重复加载带来的性能开销。
+        避免重复加载带来的性能开销。使用线程锁确保线程安全。
     """
     ctx = AppContext.get()
     if ctx.jieba_initialized:
         return
 
-    user_dict = ctx.kb_path / "user_dict.txt"
-    if user_dict.exists():
-        try:
-            jieba.load_userdict(str(user_dict))
-            logger.debug(f"Loaded user dict from {user_dict}")
-        except Exception as e:
-            logger.warning(f"Failed to load user dict: {e}")
-    ctx.jieba_initialized = True
+    with _jieba_lock:
+        if ctx.jieba_initialized:
+            return
+
+        user_dict = ctx.kb_path / "user_dict.txt"
+        if user_dict.exists():
+            try:
+                jieba.load_userdict(str(user_dict))
+                logger.debug(f"Loaded user dict from {user_dict}")
+            except Exception as e:
+                logger.warning(f"Failed to load user dict: {e}")
+        ctx.jieba_initialized = True
+
+
+async def init_jieba_async() -> None:
+    """异步初始化 Jieba 分词器。"""
+    await asyncio.to_thread(_init_jieba)
 
 
 def segment_text(text: str) -> str:

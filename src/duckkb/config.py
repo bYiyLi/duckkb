@@ -14,7 +14,14 @@ import yaml
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field, field_validator
 
-from duckkb.constants import EMBEDDING_MODEL_DIMS, VALID_LOG_LEVELS
+from duckkb.constants import (
+    CONFIG_FILE_NAME,
+    DEFAULT_EMBEDDING_DIM,
+    DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_LOG_LEVEL,
+    EMBEDDING_MODEL_DIMS,
+    VALID_LOG_LEVELS,
+)
 from duckkb.ontology import Ontology
 
 
@@ -42,8 +49,8 @@ class EmbeddingConfig(BaseModel):
         dim: 嵌入向量维度，必须为 1536 或 3072。
     """
 
-    model: str = "text-embedding-3-small"
-    dim: int = 1536
+    model: str = DEFAULT_EMBEDDING_MODEL
+    dim: int = DEFAULT_EMBEDDING_DIM
 
     @field_validator("dim")
     @classmethod
@@ -96,7 +103,7 @@ class KBConfig(BaseModel):
     """
 
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
-    log_level: str = "INFO"
+    log_level: str = DEFAULT_LOG_LEVEL
     ontology: Ontology = Field(default_factory=Ontology)
 
     @field_validator("log_level")
@@ -128,7 +135,7 @@ class KBConfig(BaseModel):
         Returns:
             加载的 KBConfig 实例，若配置文件不存在则返回默认配置。
         """
-        config_path = kb_path / "config.yaml"
+        config_path = kb_path / CONFIG_FILE_NAME
         if config_path.exists():
             with open(config_path, encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
@@ -136,10 +143,10 @@ class KBConfig(BaseModel):
             ontology_config = data.get("ontology", {})
             return cls(
                 embedding=EmbeddingConfig(
-                    model=embedding_config.get("model", "text-embedding-3-small"),
-                    dim=embedding_config.get("dim", 1536),
+                    model=embedding_config.get("model", DEFAULT_EMBEDDING_MODEL),
+                    dim=embedding_config.get("dim", DEFAULT_EMBEDDING_DIM),
                 ),
-                log_level=data.get("log_level", "INFO"),
+                log_level=data.get("log_level", DEFAULT_LOG_LEVEL),
                 ontology=Ontology(**ontology_config) if ontology_config else Ontology(),
             )
         return cls()
