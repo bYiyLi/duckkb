@@ -1,94 +1,85 @@
-# DuckKB 核心功能实现计划
+# DuckKB 功能补全实施计划
 
-## 概述
+根据对现有代码库的分析与设计文档 ([设计文档.md](file:///c:/Users/baiyihuan/code/duckkb/设计文档.md)) 的对比，发现以下功能尚未实现或仅部分实现。本计划旨在补全这些缺失的能力。
 
-本计划旨在基于 `设计文档.md` 实现 DuckKB 的核心功能。系统是一个基于 DuckDB 的智能体知识引擎，具备混合检索、向量缓存和文件驱动的数据管理能力。
+## 1. 现状与差距分析
 
-## 实施阶段
+| 功能模块     | 设计要求                                            | 当前状态            | 差距                     |
+| :------- | :---------------------------------------------- | :-------------- | :--------------------- |
+| **混合搜索** | `(BM25 * 0.4 + Vector * 0.6) * priority_weight` | 仅向量搜索           | 缺失 BM25 文本检索与加权融合逻辑    |
+| **垃圾回收** | 定期清理 `_sys_cache` (>30天未用)                      | 仅记录 `last_used` | 缺失清理逻辑 (`clean_cache`) |
+| **查询限制** | 结果集 < 2MB; 自动 Limit                             | 已实现自动 Limit     | 缺失结果集大小 (2MB) 限制       |
 
-### 阶段 1: 环境与配置
+## 2. 实施步骤
 
-* [ ] **依赖检查**: 确认安装 `duckdb`, `fastmcp`, `openai`, `jieba`, `typer`, `watchfiles`, `rich`, `orjson`, `pydantic-settings`。
+### Step 1: 实现混合搜索 (Hybrid Search)
 
-* [ ] **配置增强**: 更新 `src/duckkb/config.py` 以完整支持 `KB_PATH` 等配置。
+**目标**: 在 `smart_search` 中引入关键词检索，并与向量检索结果进行加权融合。
 
-* [ ] **日志设置**: 在 `src/duckkb/logger.py` 中设置结构化日志。
+* **文件**: `src/duckkb/engine/searcher.py`
 
-### 阶段 2: 数据库层与 Schema
+* **方案**:
 
-* [ ] **Schema 定义**: 定义 `_sys_search` 和 `_sys_cache` 表结构。
+  1. 利用 DuckDB 的 `fts` (Full Text Search) 扩展或 `score()` 函数（如果可用）。
+  2. 如果 FTS 不可用，使用 `LIKE` 进行简单的文本匹配作为降级方案，或者手动实现简化版 TF-IDF/BM25 SQL。
+  3. **优先方案**: 尝试使用 DuckDB 的 `fts` 宏构建索引，并在查询时使用 `fts_main_xxxx.match_bm25`。
+  4. **调整 SQL**:
 
-* [ ] **DB 初始化**: 在 `src/duckkb/db.py` 中实现数据库及表的初始化逻辑。
+     ```sql
+     SELECT
+         ...,
+         (fts_score * 0.4 + vector_score * 0.6) * priority_weight AS final_score
+     FROM ...
+     ORDER BY final_score DESC
+     ```
 
-* [ ] **Schema 管理**: 实现从 KB 目录读取并应用 `schema.sql` 到数据库的逻辑。
+### Step 2: 实现自动垃圾回收 (Auto GC)
 
-### 阶段 3: 向量服务与缓存 (成本优先)
+**目标**: 清理长期未使用的向量缓存，释放空间。
 
-* [ ] **向量缓存表**: 确保 `_sys_cache` 表已创建。
+* **文件**: `src/duckkb/engine/indexer.py` (新增 `clean_cache` 方法)
 
-* [ ] **Embedding 逻辑**: 实现 `src/duckkb/utils/embedding.py`:
+* **逻辑**:
 
-  * 计算内容哈希 (MD5/SHA256)。
+  1. 定义 `GC_THRESHOLD_DAYS = 30`。
+  2. SQL: `DELETE FROM _sys_cache WHERE last_used < current_timestamp - INTERVAL '30 days'`.
+  3. **触发时机**: 在每次 `sync_knowledge_base` 执行结束时自动触发。
 
-  * 查询 DuckDB 缓存。
+### Step 3: 增强查询结果限制 (Result Size Limit)
 
-  * 若未命中，调用 OpenAI API。
+**目标**: 防止大结果集阻塞 MCP 通道。
 
-  * 存入缓存并返回向量。
+* **文件**: `src/duckkb/engine/searcher.py`
 
-### 阶段 4: 索引引擎 (文件驱动同步)
+* **逻辑**:
 
-* [ ] **文本分词**: 在 `src/duckkb/utils/text.py` 中使用 `jieba` 实现中文分词。
+  1. 在 `query_raw_sql` 获取结果后，计算结果集的字节大小。
+  2. 如果 `sys.getsizeof(results) > 2 * 1024 * 1024` (2MB)，则截断结果或抛出友好的错误提示。
+  3. 保留现有的 `LIMIT` 注入逻辑。
 
-* [ ] **同步逻辑**: 在 `src/duckkb/engine/indexer.py` 中实现 `sync_knowledge_base`:
+## 3. 验证计划
 
-  * 扫描 `data/*.jsonl` 文件。
+1. **混合搜索验证**:
 
-  * 实现增量更新逻辑（检查文件修改时间）。
+   * 插入包含特定关键词的记录。
 
-  * 处理记录：提取文本 -> 生成向量 -> 提取元数据 -> Upsert 到 `_sys_search`。
+   * 执行搜索，确认文本匹配能提升排名。
+2. **GC 验证**:
 
-* [ ] **原子写入**: 确保文件操作采用“先写临时文件再重命名”模式。
+   * 手动修改 `_sys_cache` 中某条记录的 `last_used` 为 31 天前。
 
-### 阶段 5: 搜索引擎 (混合检索)
+   * 运行 `sync`，确认该记录被删除。
+3. **限流验证**:
 
-* [ ] **混合搜索**: 在 `src/duckkb/engine/searcher.py` 中实现 `smart_search`:
+   * 构造一个返回大量文本的 SQL 查询。
 
-  * 生成查询向量。
+   * 确认工具返回错误或截断后的结果。
 
-  * 构建 SQL 查询以实现 BM25 + 向量相似度混合检索。
+## 4. 任务列表
 
-  * 执行查询并格式化结果。
+* [ ] (Step 1) 研究 DuckDB FTS 在当前环境的可用性，并实现混合搜索 SQL。
 
-* [ ] **安全 SQL 执行**: 在 `src/duckkb/engine/searcher.py` 中实现 `query_raw_sql`:
+* [ ] (Step 2) 在 `indexer.py` 中实现 `clean_cache` 并集成到 `sync` 流程。
 
-  * 强制只读连接。
-
-  * 自动追加 `LIMIT`（如果缺失）。
-
-  * 错误处理。
-
-### 阶段 6: 数据导入与验证
-
-* [ ] **验证逻辑**: 在 `src/duckkb/engine/indexer.py` 中实现 `validate_and_import`:
-
-  * 验证 JSONL 格式。
-
-  * 提供具体的错误反馈（行号、字段）。
-
-  * 将有效文件从 `.build/temp` 移动到 `data/`。
-
-### 阶段 7: MCP 服务集成
-
-* [ ] **工具暴露**: 实现 `src/duckkb/mcp/server.py`:
-
-  * 注册 `sync_knowledge_base`, `get_schema_info`, `smart_search`, `query_raw_sql`, `validate_and_import` 工具。
-
-  * 将工具连接到引擎函数。
-
-### 阶段 8: 测试与验证
-
-* [ ] **单元测试**: 添加针对向量缓存、SQL 安全性和同步逻辑的测试。
-
-* [ ] **集成测试**: 使用示例知识库验证完整流程。
+* [ ] (Step 3) 在 `searcher.py` 中添加结果集大小检查逻辑。
 

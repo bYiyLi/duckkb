@@ -53,6 +53,37 @@ async def sync_knowledge_base(kb_path: Path):
     state_file.parent.mkdir(parents=True, exist_ok=True)
     state_file.write_bytes(orjson.dumps(sync_state))
 
+    # Ensure FTS index
+    try:
+        with get_db(read_only=False) as conn:
+            # PRAGMA create_fts_index is idempotent in newer DuckDB versions,
+            # or we can wrap it. But usually it's fine to call.
+            # If table is empty, it might warn/fail.
+            # Use 'rowid' as the key column for FTS to handle non-unique ref_ids
+            conn.execute(
+                f"PRAGMA create_fts_index('{SYS_SEARCH_TABLE}', 'rowid', 'segmented_text')"
+            )
+    except Exception as e:
+        logger.warning(f"FTS index creation/refresh failed: {e}")
+
+    # Trigger GC
+    await clean_cache()
+
+
+async def clean_cache():
+    """Clean up unused vector cache entries older than 30 days."""
+    logger.info("Running cache GC...")
+    try:
+        # Use asyncio.to_thread for blocking DB op
+        await asyncio.to_thread(_execute_gc)
+    except Exception as e:
+        logger.error(f"Cache GC failed: {e}")
+
+
+def _execute_gc():
+    with get_db(read_only=False) as conn:
+        conn.execute("DELETE FROM _sys_cache WHERE last_used < current_timestamp - INTERVAL 30 DAY")
+
 
 async def _process_file(file_path: Path, table_name: str):
     # Read all records
@@ -125,8 +156,6 @@ def _bulk_insert(table_name: str, rows: list[tuple]):
         except Exception as e:
             conn.execute("ROLLBACK")
             raise e
-
-
 
 
 async def validate_and_import(table_name: str, temp_file_path: Path) -> str:
