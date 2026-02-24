@@ -1,3 +1,5 @@
+# DuckKB 重构与优化检查清单
+
 - [x] `src/duckkb/utils/file_ops.py` 实现并通过测试
 - [x] `importer.py` 中的 `validate_and_import` 函数长度小于 50 行
 - [x] `searcher.py` 中的 `smart_search` 函数长度小于 50 行
@@ -5,7 +7,7 @@
 - [x] `server.py` 中的同步 I/O 操作已替换为异步操作
 - [x] `config.py` 中的魔术数字/字符串已提取
 - [x] 所有公共方法均有完整的 Docstring (Args, Returns, Raises)
-- [ ] 宽泛的 `except Exception` 已被具体的异常捕获替代或记录
+- [x] 宽泛的 `except Exception` 已被具体的异常捕获替代或记录
 - [x] 重复的文件读写逻辑已通过 `file_ops` 模块复用
-- [ ] 所有测试通过 (`pytest tests/`)
-- [ ] 代码通过 `ruff` 检查
+- [x] 所有测试通过 (`pytest tests/`)
+- [x] 代码通过 `ruff` 检查

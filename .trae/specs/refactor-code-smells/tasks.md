@@ -29,9 +29,9 @@
   - [x] SubTask 6.1: 扫描并提取 `src/duckkb/config.py` 和 `src/duckkb/ontology/_models.py` 中的硬编码值。
   - [x] SubTask 6.2: 检查并补充剩余公共方法的 docstrings。
 
-- [ ] Task 7: 最终验证
-  - [ ] SubTask 7.1: 运行所有单元测试，确保重构未引入回归。
-  - [ ] SubTask 7.2: 运行 ruff 检查代码规范。
+- [x] Task 7: 最终验证
+  - [x] SubTask 7.1: 运行所有单元测试，确保重构未引入回归。
+  - [x] SubTask 7.2: 运行 ruff 检查代码规范。
 
 # Task Dependencies
 - [Task 2], [Task 4], [Task 5] depends on [Task 1]
