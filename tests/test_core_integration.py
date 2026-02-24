@@ -4,8 +4,9 @@ import pytest
 
 from duckkb.constants import DATA_DIR_NAME, SYS_SEARCH_TABLE
 from duckkb.db import get_db
-from duckkb.engine.indexer import sync_knowledge_base, validate_and_import
+from duckkb.engine.importer import validate_and_import
 from duckkb.engine.searcher import query_raw_sql, smart_search
+from duckkb.engine.sync import sync_knowledge_base
 from duckkb.schema import init_schema
 
 # Mock embedding to return a fixed vector
@@ -15,27 +16,27 @@ MOCK_EMBEDDING = [0.1] * 1536
 @pytest.fixture
 def mock_embedding():
     # Mock the OpenAI client to allow caching logic to run
-    
+
     async def side_effect(*args, **kwargs):
         input_data = kwargs.get("input", [])
         if isinstance(input_data, str):
             count = 1
         else:
             count = len(input_data)
-            
+
         mock_response = AsyncMock()
         mock_data_list = []
         for _ in range(count):
             d = AsyncMock()
             d.embedding = MOCK_EMBEDDING
             mock_data_list.append(d)
-        
+
         mock_response.data = mock_data_list
         return mock_response
 
     mock_client = AsyncMock()
     mock_client.embeddings.create.side_effect = side_effect
-    
+
     with patch("duckkb.utils.embedding.get_openai_client", return_value=mock_client):
         yield
 
@@ -44,8 +45,7 @@ def mock_embedding():
 async def test_full_flow(mock_kb_path, mock_embedding):
     """Verify core flow: Init -> Sync -> Search -> Import -> Sync Again."""
 
-    # 1. Init Schema
-    init_schema()
+    await init_schema()
 
     # 2. Create initial data
     data_dir = mock_kb_path / DATA_DIR_NAME

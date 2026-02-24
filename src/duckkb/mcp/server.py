@@ -1,66 +1,114 @@
+"""
+DuckKB MCP 服务模块
+
+本模块提供基于 FastMCP 的 Model Context Protocol (MCP) 服务实现，
+为 AI 助手提供知识库操作工具集。
+
+提供的工具：
+- check_health: 健康检查，返回服务状态和知识库信息
+- sync_knowledge_base: 同步知识库，从 JSONL 文件导入到 DuckDB
+- get_schema_info: 获取数据库模式定义和 ER 图信息
+- smart_search: 智能混合搜索（向量 + 元数据）
+- query_raw_sql: 执行只读 SQL 查询
+- validate_and_import: 验证并导入数据文件
+"""
+
 import json
 from pathlib import Path
 
 from fastmcp import FastMCP
 
-from duckkb.config import settings
-from duckkb.engine.indexer import sync_knowledge_base as _sync
-from duckkb.engine.indexer import validate_and_import as _validate
+from duckkb.config import AppContext
+from duckkb.constants import BUILD_DIR_NAME, DATA_DIR_NAME, DB_FILE_NAME
+from duckkb.engine.sync import sync_knowledge_base as _sync
+from duckkb.engine.importer import validate_and_import as _validate
 from duckkb.engine.searcher import query_raw_sql as _query
 from duckkb.engine.searcher import smart_search as _search
-from duckkb.logger import setup_logging
 from duckkb.schema import get_schema_info as _get_schema_info
-from duckkb.schema import init_schema
 
-# Initialize logging
-setup_logging()
-
-# Initialize schema
-try:
-    init_schema()
-except Exception as e:
-    import logging
-
-    logging.error(f"Failed to initialize schema: {e}")
-
-# Initialize FastMCP server
 mcp = FastMCP("DuckKB")
 
 
 @mcp.tool()
 async def check_health() -> str:
-    """Check if the server is running."""
-    return "DuckKB is running!"
+    """
+    检查服务健康状态。
+
+    返回知识库的详细状态信息，包括路径、数据库是否存在、数据文件数量等。
+
+    Returns:
+        str: JSON 格式的状态信息，包含以下字段：
+            - status: 状态标识，正常为 "healthy"
+            - kb_path: 知识库路径
+            - db_exists: 数据库文件是否存在
+            - data_files_count: 数据文件数量
+            - data_files: 数据文件名列表（不含扩展名）
+    """
+    ctx = AppContext.get()
+    db_path = ctx.kb_path / BUILD_DIR_NAME / DB_FILE_NAME
+    data_dir = ctx.kb_path / DATA_DIR_NAME
+
+    data_files = list(data_dir.glob("*.jsonl")) if data_dir.exists() else []
+
+    status = {
+        "status": "healthy",
+        "kb_path": str(ctx.kb_path),
+        "db_exists": db_path.exists(),
+        "data_files_count": len(data_files),
+        "data_files": [f.stem for f in data_files],
+    }
+    return json.dumps(status, ensure_ascii=False)
 
 
 @mcp.tool()
 async def sync_knowledge_base() -> str:
-    """Sync the knowledge base from JSONL files to DuckDB."""
-    await _sync(settings.KB_PATH)
+    """
+    同步知识库。
+
+    从 JSONL 数据文件导入内容到 DuckDB 数据库，包括向量化处理。
+    此操作会更新数据库索引和向量存储。
+
+    Returns:
+        str: 操作结果消息，成功时返回 "Synchronization completed."
+    """
+    await _sync(AppContext.get().kb_path)
     return "Synchronization completed."
 
 
 @mcp.tool()
 def get_schema_info() -> str:
-    """Return the schema definition and ER diagram info."""
+    """
+    获取数据库模式信息。
+
+    返回知识库的表结构定义和实体关系图（ER 图）信息，
+    帮助用户了解数据模型和表间关系。
+
+    Returns:
+        str: 数据库模式的详细描述，包含表结构和 ER 图信息。
+    """
     return _get_schema_info()
 
 
 @mcp.tool()
 async def smart_search(
-    query: str, 
-    limit: int = 10, 
-    table_filter: str | None = None,
-    alpha: float = 0.5
+    query: str, limit: int = 10, table_filter: str | None = None, alpha: float = 0.5
 ) -> str:
     """
-    Perform a hybrid search (Vector + Metadata).
+    执行智能混合搜索（向量 + 元数据）。
+
+    结合向量相似度搜索和元数据匹配，提供更精准的搜索结果。
+    向量搜索基于语义相似性，元数据搜索基于精确匹配。
+
     Args:
-        query: The search query string.
-        limit: Max results to return.
-        table_filter: Optional filter for source_table.
-        alpha: Weight for vector search (0.0 to 1.0). Default 0.5.
-    Returns JSON string of results.
+        query: 搜索查询字符串，支持自然语言描述。
+        limit: 返回结果的最大数量，默认为 10。
+        table_filter: 可选的源表过滤器，限定搜索范围到指定表。
+        alpha: 向量搜索的权重系数，取值范围 0.0 到 1.0。
+               0.0 表示仅使用元数据搜索，1.0 表示仅使用向量搜索。
+               默认为 0.5，表示两种搜索方式权重相等。
+
+    Returns:
+        str: JSON 格式的搜索结果列表，每个结果包含匹配的记录详情。
     """
     results = await _search(query, limit, table_filter, alpha)
     return json.dumps(results, ensure_ascii=False, default=str)
@@ -69,8 +117,19 @@ async def smart_search(
 @mcp.tool()
 async def query_raw_sql(sql: str) -> str:
     """
-    Execute raw SQL safely. Returns JSON string.
-    Read-only, auto-LIMIT applied.
+    执行只读 SQL 查询。
+
+    安全地执行原始 SQL 查询语句，仅支持 SELECT 操作。
+    系统会自动应用 LIMIT 限制，防止返回过多数据。
+
+    Args:
+        sql: 要执行的 SQL 查询语句，必须是 SELECT 语句。
+
+    Returns:
+        str: JSON 格式的查询结果列表。
+
+    Raises:
+        ValueError: 当 SQL 语句不是只读查询时抛出。
     """
     results = await _query(sql)
     return json.dumps(results, ensure_ascii=False, default=str)
@@ -79,9 +138,22 @@ async def query_raw_sql(sql: str) -> str:
 @mcp.tool()
 async def validate_and_import(table_name: str, temp_file_path: str) -> str:
     """
-    Validate temp file and move to data dir.
+    验证并导入数据文件。
+
+    验证临时 JSONL 文件的格式和内容，验证通过后将其移动到数据目录。
+    此操作用于安全地导入新数据到知识库。
+
     Args:
-        table_name: The target table name (without .jsonl).
-        temp_file_path: Absolute path to the temporary JSONL file.
+        table_name: 目标表名（不含 .jsonl 扩展名）。
+                   文件将被命名为 {table_name}.jsonl。
+        temp_file_path: 临时 JSONL 文件的绝对路径。
+                       文件必须符合知识库的数据格式规范。
+
+    Returns:
+        str: 操作结果消息，包含导入状态和详细信息。
+
+    Raises:
+        ValueError: 当文件格式不正确或验证失败时抛出。
+        FileNotFoundError: 当临时文件不存在时抛出。
     """
     return await _validate(table_name, Path(temp_file_path))

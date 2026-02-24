@@ -4,7 +4,7 @@ exclude = ["uv.lock"]
 
 [lint]
 extend-select = ["I", "UP", "B", "C4", "DTZ", "TCH"]
-ignore = []
+ignore = ["B008"]
 
 [format]
 quote-style = "double"
