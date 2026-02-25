@@ -1,0 +1,5 @@
+- [ ] 数据加载使用 `read_json_auto` 而非 Python 循环
+- [ ] 数据导出使用 `COPY ... PARTITION_BY` 实现自动分片
+- [ ] Node 和 Edge 表包含 `__id` 和分区字段
+- [ ] RRF 检索完全在 SQL 中执行
+- [ ] 核心引擎代码位于 `src/duckkb/core`

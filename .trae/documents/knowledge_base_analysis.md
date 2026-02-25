@@ -1,72 +1,365 @@
-# DuckKB 知识库结构与运行机制分析
+# DuckKB 项目分析报告
 
-## 1. 项目概览
+## 1. 项目概述
 
-DuckKB 是一个基于 DuckDB 的本地知识库引擎，专为 Agent 设计，采用 **Model Context Protocol (MCP)** 架构。其核心理念是"文件驱动"（File-Driven），即以 `.jsonl` 文件作为数据的单一事实来源（Source of Truth），DuckDB 仅作为高性能运行时索引。
+DuckKB 是一个基于 **DuckDB** 的 **MCP (Model Context Protocol) 知识库服务**，专为 AI Agent 提供持久化记忆层。项目采用 Python 3.12+ 开发，使用 uv 管理依赖，通过 MCP 协议为 AI 助手提供知识检索和管理的工具集。
 
-## 2. 目录结构分析
+### 核心设计哲学
 
-项目的核心代码位于 `src/duckkb/` 目录下，主要结构如下：
+- **一库一服 (Dedicated Mode)**：每个实例独占一个目录，通过环境变量 `KB_PATH` 锁定
+- **文件驱动 (File-Driven)**：所有知识变更必须通过修改 `.jsonl` 事实文件完成
+- **成本优先 (Cost Efficiency)**：内置向量缓存，避免对相同文本重复调用大模型 API
 
-*   **`src/duckkb/`**: 核心源码目录
-    *   **`main.py`**: CLI 命令行入口，负责启动应用和 MCP 服务。
-    *   **`config.py`**: 配置管理模块，定义了 `GlobalConfig`（API Key 等）和 `KBConfig`（知识库特定配置）。
-    *   **`mcp/`**: MCP 协议实现层
-        *   `server.py`: 定义了 MCP 服务器及其暴露的工具（如 `smart_search`, `sync_knowledge_base`）。
-    *   **`engine/`**: 核心业务逻辑引擎
-        *   `sync.py`: 负责将 `.jsonl` 文件同步到 DuckDB，处理增量更新和向量化。
-        *   `searcher.py`: 实现混合检索逻辑（Vector + BM25）。
-        *   `importer.py`, `deleter.py`: 数据导入与删除逻辑。
-        *   `cache.py`: 向量缓存管理，减少 API 调用成本。
-    *   **`ontology/`**: 本体定义模块，负责解析 `config.yaml` 中的 Schema 定义。
-    *   **`utils/`**: 通用工具（文本分词、文件操作、Embedding 调用等）。
+---
 
-## 3. 核心组件
+## 2. 系统架构
 
-### 3.1 CLI 与入口点
-*   **入口文件**: `src/duckkb/main.py`
-*   **功能**: 使用 `typer` 构建命令行接口。
-*   **主要命令**:
-    *   `duckkb serve`: 启动 MCP 服务器，供 Claude 或其他 Agent 客户端连接。
-    *   `duckkb --kb-path <PATH>`: 指定知识库路径（默认为 `./knowledge-bases/default`）。
+### 2.1 整体架构图
 
-### 3.2 配置管理
-*   **配置文件**: `knowledge-bases/{kb_id}/config.yaml`
-*   **内容**: 定义实体（Nodes）、关系（Edges）和向量字段等 Schema 信息。
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         DuckKB MCP Server                        │
+│                      (FastMCP + Typer CLI)                      │
+└─────────────────────────────────────────────────────────────────┘
+                                  │
+        ┌─────────────────────────┼─────────────────────────┐
+        ▼                         ▼                         ▼
+┌───────────────┐      ┌─────────────────┐      ┌─────────────────┐
+│  MCP Tools    │      │  Knowledge Base │      │   Backup        │
+│  (Tools API) │      │   Manager       │      │   Manager       │
+└───────────────┘      └─────────────────┘      └─────────────────┘
+        │                         │                         │
+        └─────────────────────────┼─────────────────────────┘
+                                  ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                      Core Engine Layer                          │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐              │
+│  │ DataLoader  │  │ DataPersister│  │ SearchEngine│              │
+│  │ (File→DB)   │  │ (DB→File)    │  │ (Hybrid)     │              │
+│  └─────────────┘  └─────────────┘  └─────────────┘              │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐              │
+│  │ Ontology   │  │ Migration   │  │ Cache       │              │
+│  │ Engine     │  │ Manager     │  │ Manager     │              │
+│  └─────────────┘  └─────────────┘  └─────────────┘              │
+└─────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    Data & Storage Layer                         │
+│  ┌─────────────────┐    ┌─────────────────┐                    │
+│  │  DuckDB         │    │  File System    │                    │
+│  │  (vss extension)│    │  (.jsonl files) │                    │
+│  └─────────────────┘    └─────────────────┘                    │
+└─────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    External Services                            │
+│  ┌─────────────────┐    ┌─────────────────┐                    │
+│  │  OpenAI API     │    │  Git Repository │                    │
+│  │  (Embedding)    │    │  (Audit Trail)  │                    │
+│  └─────────────────┘    └─────────────────┘                    │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-### 3.3 MCP Server
-*   **实现**: `src/duckkb/mcp/server.py`
-*   **暴露工具**:
-    *   `sync_knowledge_base`: 触发文件到数据库的同步。
-    *   `smart_search`: 执行智能混合搜索。
-    *   `query_raw_sql`: 执行只读 SQL 查询。
-    *   `validate_and_import`: 验证并导入数据。
+### 2.2 核心模块说明
 
-### 3.4 知识引擎
-*   **同步引擎**: `engine/sync.py` 负责将文件变更同步到数据库。
-*   **搜索引擎**: `engine/searcher.py` 实现向量与全文的混合检索。
+| 模块 | 路径 | 职责 |
+|------|------|------|
+| **main.py** | `src/duckkb/main.py` | CLI 入口，支持 `serve` 和 `version` 命令 |
+| **MCP Server** | `src/duckkb/mcp/server.py` | MCP 协议实现，提供 9 个工具函数 |
+| **Config** | `src/duckkb/config.py` | 配置管理，应用上下文单例 |
+| **KnowledgeBaseManager** | `src/duckkb/database/engine/manager.py` | 知识库统一管理入口，协调加载/持久化 |
+| **DataLoader** | `src/duckkb/database/engine/loader.py` | 文件 → 数据库同步，增量更新 |
+| **DataPersister** | `src/duckkb/database/persister.py` | 数据库 → 文件持久化 |
+| **SearchEngine** | `src/duckkb/database/engine/search.py` | 混合搜索（向量 + BM25） |
+| **OntologyEngine** | `src/duckkb/database/engine/ontology/engine.py` | 本体定义解析与 DDL 生成 |
+| **Embedding Utils** | `src/duckkb/utils/embedding.py` | 向量嵌入生成与缓存管理 |
+| **BackupManager** | `src/duckkb/database/engine/backup.py` | 备份与恢复 |
 
-## 4. 数据流分析 (Data Flow)
+---
 
-数据流遵循 **File -> DB -> Search** 的单向流动原则：
+## 3. 实现功能
 
-1.  **定义 (Ontology)**: 用户在 `config.yaml` 中定义数据结构。
-2.  **输入 (Ingestion)**: 数据以 `.jsonl` 格式存储在 `knowledge-bases/{kb_id}/data/` 目录下。
-3.  **同步 (Synchronization)**:
-    *   系统读取 `.jsonl` 文件，计算内容哈希。
-    *   仅对变更记录调用 Embedding API 生成向量。
-    *   数据写入 DuckDB 的 `_sys_search` 表（包含分词文本、向量、元数据）。
-4.  **检索 (Retrieval)**:
-    *   混合搜索：同时执行 **向量搜索 (Cosine Similarity)** 和 **全文搜索 (BM25)**。
-    *   加权融合：`Final_Score = (BM25 * (1-alpha) + Vector * alpha) * priority_weight`。
+### 3.1 MCP 工具集
 
-## 5. 运行机制
+| 工具名称 | 功能描述 |
+|----------|----------|
+| `check_health` | 健康检查，返回知识库状态信息 |
+| `sync_knowledge_base` | 同步 JSONL 文件到数据库，支持增量更新 |
+| `get_schema_info` | 获取数据库 Schema 和 ER 图 |
+| `smart_search` | 混合检索（向量 + BM25），可配置权重 |
+| `query_raw_sql` | 安全只读 SQL 查询 |
+| `validate_and_import` | 验证并导入数据（upsert 语义） |
+| `delete_records` | 删除指定记录 |
+| `list_backups` | 列出所有备份 |
+| `restore_backup` | 从备份恢复 |
+| `create_backup` | 创建备份 |
 
-1.  **启动**: 运行 `duckkb serve`，系统初始化 `AppContext`，加载配置。
-2.  **初始化**: 通过 `lifespan` 事件自动执行 `init_schema` 和 `sync_knowledge_base`，确保数据库处于最新状态。
-3.  **运行时**: MCP Server 监听请求，处理搜索、导入等操作。
-4.  **持久化**: 所有有效数据始终以 `.jsonl` 文件形式存在于磁盘，DuckDB (`.build/knowledge.db`) 仅作为运行时的高性能索引缓存，可随时重建。
+### 3.2 核心功能特性
 
-## 6. 总结
+#### 1. 混合检索 (Hybrid Search)
+- 结合 **向量搜索**（语义相似度）和 **BM25 全文搜索**
+- 可配置权重 `alpha` 参数（0.0-1.0）
+- 结果包含完整 `metadata`，便于 Agent 直接使用
 
-DuckKB 通过将文件系统作为数据源，结合 DuckDB 的高性能分析能力，构建了一个既适合版本控制又具备强大检索能力的本地知识库系统。其模块化设计使得扩展新的数据源或检索引擎变得容易。
+#### 2. 向量缓存 (Embedding Cache)
+- 基于内容哈希的持久化缓存
+- 避免重复调用 Embedding API，**降低 80%+ 成本**
+- 自动清理超过 30 天的过期缓存
+
+#### 3. Git 可审计
+- 所有知识变更存储在 `.jsonl` 文件中
+- 可通过 Git 版本追踪变更历史
+- 原子写入机制防止数据损坏
+
+#### 4. 安全查询
+- SQL 黑名单检测（禁止 INSERT/UPDATE/DELETE 等）
+- 自动追加 LIMIT 限制
+- 结果集大小限制（2MB）
+- 只读连接模式
+
+#### 5. 本体定义 (Ontology)
+- 支持通过 `config.yaml` 定义数据模型
+- JSON Schema 类型验证
+- 向量字段自动识别
+- DDL 自动生成
+
+#### 6. 增量同步
+- 基于文件 mtime 的增量检测
+- 基于内容哈希的变更检测
+- 避免不必要的重复处理
+
+#### 7. 备份与恢复
+- 完整备份（数据库 + 数据文件 + 配置）
+- 自动清理旧备份（保留最新 5 个）
+
+---
+
+## 4. 数据流设计
+
+### 4.1 启动流程 (File → DB)
+
+```
+JSONL Files ──▶ DataLoader ──▶ Diff Compute ──▶ DuckDB
+                 │                  │
+                 │                  ▼
+                 │            Generate Embeddings
+                 │                  │
+                 │                  ▼
+                 │            Update Cache
+                 └──────────────────┘
+```
+
+### 4.2 写入流程 (Upsert)
+
+```
+MCP Tool ──▶ KnowledgeBaseManager ──▶ DB Transaction ──▶ Async Save
+                   │                        │
+                   │                        ▼
+                   │                  JSONL Files
+                   │                        │
+                   └────────────────◀────────┘
+```
+
+### 4.3 搜索流程
+
+```
+User Query ──▶ Generate Embedding ──▶ Hybrid Search (CTE)
+                   │                         │
+                   │                         ▼
+                   │                   BM25 + Vector
+                   │                         │
+                   ▼                         ▼
+              Cache Hit? ──No──▶ OpenAI API ──┘
+                   │
+                  Yes
+                   │
+                   ▼
+              Return Results
+```
+
+---
+
+## 5. 数据库设计
+
+### 5.1 系统表结构
+
+#### `_sys_search` (全局搜索索引表)
+
+```sql
+CREATE TABLE _sys_search (
+    ref_id VARCHAR,           -- 记录 ID
+    source_table VARCHAR,     -- 源表名
+    source_field VARCHAR,     -- 字段名
+    segmented_text TEXT,      -- 分词后的文本 (BM25)
+    embedding_id VARCHAR,     -- 向量 ID (哈希)
+    embedding FLOAT[1536],    -- 向量嵌入
+    metadata JSON,             -- 完整记录 JSON
+    priority_weight FLOAT,    -- 优先级权重
+    PRIMARY KEY (ref_id, source_table, source_field)
+);
+-- HNSW 索引用于向量搜索
+CREATE INDEX idx_vec ON _sys_search USING HNSW (embedding) WITH (metric = 'cosine');
+```
+
+#### `_sys_cache` (向量缓存表)
+
+```sql
+CREATE TABLE _sys_cache (
+    content_hash VARCHAR PRIMARY KEY,  -- 内容哈希
+    embedding FLOAT[1536],            -- 向量嵌入
+    last_used TIMESTAMP               -- 最后使用时间
+);
+```
+
+### 5.2 目录结构
+
+```
+knowledge-bases/{kb_id}/
+├── README.md              # 知识库说明
+├── config.yaml            # 配置文件 (含本体定义)
+├── user_dict.txt          # 中文分词自定义词典
+├── schema.sql             # 传统 DDL 定义 (备选)
+├── data/                  # 核心事实数据 (Git 跟踪)
+│   ├── characters.jsonl
+│   └── locations.jsonl
+└── .build/                # 运行时产物 (Git 忽略)
+    ├── knowledge.db       # DuckDB 数据库
+    ├── sync_state.json   # 同步状态
+    └── backups/          # 备份目录
+```
+
+---
+
+## 6. 技术选型
+
+### 6.1 核心技术栈
+
+| 技术 | 用途 | 版本要求 |
+|------|------|----------|
+| **DuckDB** | 嵌入式分析数据库 | >= 1.4.4 |
+| **FastMCP** | MCP 协议实现 | >= 3.0.2 |
+| **OpenAI** | 向量嵌入生成 | >= 2.23.0 |
+| **Pydantic** | 配置与数据验证 | >= 2.12.5 |
+| **jieba** | 中文分词 | >= 0.42.1 |
+| **orjson** | 高性能 JSON 处理 | >= 3.11.7 |
+| **typer** | CLI 框架 | >= 0.24.1 |
+
+### 6.2 异步架构
+
+- 所有 I/O 操作均采用 **async/await**
+- 同步数据库操作通过 `asyncio.to_thread` 封装
+- 避免阻塞事件循环
+
+---
+
+## 7. 安全性设计
+
+### 7.1 SQL 注入防护
+
+- 表名验证：正则 `^[a-zA-Z_][a-zA-Z0-9_]*$`
+- SQL 关键字黑名单检测
+- 参数化查询
+
+### 7.2 查询限流
+
+- 默认 LIMIT 1000
+- 结果集大小限制 2MB
+- 只读连接模式
+
+### 7.3 文件操作安全
+
+- 原子写入：先写临时文件再重命名
+- 路径验证：防止目录遍历攻击
+
+---
+
+## 8. 配置管理
+
+### 8.1 环境变量
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `KB_PATH` | `./knowledge-bases/default` | 知识库路径 |
+| `OPENAI_API_KEY` | - | OpenAI API 密钥 |
+| `OPENAI_BASE_URL` | - | API 基础 URL |
+| `EMBEDDING_MODEL` | `text-embedding-3-small` | 嵌入模型 |
+| `EMBEDDING_DIM` | `1536` | 向量维度 |
+| `LOG_LEVEL` | `INFO` | 日志级别 |
+
+### 8.2 config.yaml 结构
+
+```yaml
+embedding:
+  model: text-embedding-3-small
+  dim: 1536
+
+log_level: INFO
+
+usage_instructions: |
+  # 使用说明...
+
+ontology:
+  nodes:
+    Character:
+      table: characters
+      identity: [id]
+      schema:
+        type: object
+        properties:
+          id: { type: string }
+          name: { type: string, maxLength: 100 }
+      vectors:
+        description:
+          dim: 1536
+          model: text-embedding-3-small
+```
+
+---
+
+## 9. 开发规范
+
+### 9.1 代码规范
+
+- **Python 3.12+**
+- **PEP 8** 格式规范
+- **Google Style** Docstring
+- **ruff** 强制格式化
+- **mypy** 类型检查
+
+### 9.2 依赖管理
+
+- 使用 **uv** 管理依赖
+- 新增依赖必须写清用途与替代方案
+
+---
+
+## 10. 测试覆盖
+
+项目包含完整的测试套件：
+
+- `test_main.py` - 入口测试
+- `test_searcher.py` - 搜索功能测试
+- `test_indexer.py` - 索引功能测试
+- `test_cache.py` - 缓存功能测试
+- `test_backup.py` - 备份功能测试
+- `test_ontology.py` - 本体引擎测试
+- `test_sql_security.py` - SQL 安全测试
+- `test_core_integration.py` - 核心集成测试
+
+---
+
+## 11. 总结
+
+DuckKB 是一个设计精良的知识库管理系统，具有以下亮点：
+
+1. **MCP 协议支持**：标准化 AI Agent 交互接口
+2. **混合检索**：结合向量与全文搜索，兼顾语义和精确性
+3. **成本优化**：向量缓存显著降低 API 调用成本
+4. **Git 可审计**：便于版本追踪和变更管理
+5. **安全可靠**：多重安全机制保护数据
+6. **异步架构**：高效处理 I/O 密集型任务
+7. **完整工具链**：备份、恢复、迁移一体化
+
+该系统特别适合需要为 AI Agent 提供持久化记忆能力的应用场景。
