@@ -4,6 +4,7 @@ from duckkb.core.mixins.chunking import ChunkingMixin
 from duckkb.core.mixins.config import ConfigMixin
 from duckkb.core.mixins.db import DBMixin
 from duckkb.core.mixins.embedding import EmbeddingMixin
+from duckkb.core.mixins.import_ import ImportMixin
 from duckkb.core.mixins.index import IndexMixin
 from duckkb.core.mixins.ontology import OntologyMixin
 from duckkb.core.mixins.search import SearchMixin
@@ -15,6 +16,7 @@ __all__ = [
     "ConfigMixin",
     "DBMixin",
     "EmbeddingMixin",
+    "ImportMixin",
     "IndexMixin",
     "OntologyMixin",
     "SearchMixin",

@@ -1,0 +1,921 @@
+"""知识导入能力 Mixin。"""
+
+import asyncio
+import hashlib
+import os
+import shutil
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+import yaml
+from jsonschema import ValidationError, validate
+
+from duckkb.core.base import BaseEngine
+from duckkb.core.mixins.index import SEARCH_CACHE_TABLE, SEARCH_INDEX_TABLE
+from duckkb.core.mixins.storage import compute_deterministic_id
+from duckkb.logger import logger
+
+
+class ImportMixin(BaseEngine):
+    """知识导入能力 Mixin。
+
+    提供知识包导入功能，遵循原子同步协议 (Shadow Copy)：
+    - 单一事务包装所有数据库操作（业务表 + 索引）
+    - 边引用完整性检查在事务内执行
+    - 影子导出 + 原子替换确保数据一致性
+    """
+
+    async def import_knowledge_bundle(self, temp_file_path: str) -> dict[str, Any]:
+        """导入知识包。
+
+        从 YAML 文件导入数据到知识库，执行完整的校验和原子同步协议处理。
+
+        流程：
+        1. 读取 YAML 文件
+        2. Schema 校验
+        3. 开启事务
+           - 导入节点（业务表）
+           - 导入边（业务表）
+           - 验证边引用完整性
+           - 构建索引（search_index）
+           - 提交事务（失败则回滚）
+        4. 影子导出
+           - 创建影子目录
+           - 导出业务数据（JSONL）
+           - 导出缓存数据（PARQUET）
+        5. 原子替换 data/ 目录
+        6. 删除临时文件
+        7. 返回结果
+
+        Args:
+            temp_file_path: 临时 YAML 文件的绝对路径。
+
+        Returns:
+            导入结果统计，包含：
+            - status: 操作状态
+            - nodes: 节点导入统计
+            - edges: 边导入统计
+            - indexed: 索引构建统计
+            - dumped: 持久化导出统计
+
+        Raises:
+            ValidationError: Schema 校验失败时抛出。
+            FileNotFoundError: 临时文件不存在时抛出。
+            ValueError: 语义校验失败时抛出。
+        """
+        path = Path(temp_file_path)
+        if not path.exists():
+            raise FileNotFoundError(f"File not found: {temp_file_path}")
+
+        content = await self._read_file(path)
+        data = yaml.safe_load(content)
+
+        if not isinstance(data, list):
+            raise ValueError("YAML file must contain an array at root level")
+
+        get_bundle_schema = getattr(self, "get_bundle_schema", None)
+        if get_bundle_schema is None:
+            raise RuntimeError("get_bundle_schema method not available")
+        bundle_schema = get_bundle_schema()
+        full_schema = bundle_schema["full_bundle_schema"]
+
+        try:
+            validate(instance=data, schema=full_schema)
+        except ValidationError as e:
+            path_str = ".".join(str(p) for p in e.absolute_path)
+            raise ValueError(f"Validation error at [{path_str}]: {e.message}") from e
+
+        nodes_data: list[dict[str, Any]] = []
+        edges_data: list[dict[str, Any]] = []
+
+        for item in data:
+            item_type = item.get("type")
+            if item_type in self.ontology.nodes:
+                nodes_data.append(item)
+            elif item_type in self.ontology.edges:
+                edges_data.append(item)
+
+        result = await self._execute_import_in_transaction(nodes_data, edges_data)
+        nodes_result = result["nodes"]
+        edges_result = result["edges"]
+        indexed_result = result["indexed"]
+        upserted_ids = result["upserted_ids"]
+        deleted_ids = result["deleted_ids"]
+
+        affected_node_types = set(nodes_result.get("upserted", {}).keys())
+        affected_node_types.update(nodes_result.get("deleted", {}).keys())
+
+        dumped = await self._dump_to_shadow_dir(
+            affected_node_types,
+            edges_result,
+            upserted_ids,
+            deleted_ids,
+        )
+
+        if dumped:
+            await self._atomic_replace_data_dir()
+
+        await self._unlink_file(path)
+
+        return {
+            "status": "success",
+            "nodes": nodes_result,
+            "edges": edges_result,
+            "indexed": indexed_result,
+            "dumped": dumped,
+        }
+
+    async def _read_file(self, path: Path) -> str:
+        """异步读取文件内容。
+
+        Args:
+            path: 文件路径。
+
+        Returns:
+            文件内容字符串。
+        """
+        import aiofiles
+
+        async with aiofiles.open(path, encoding="utf-8") as f:
+            return await f.read()
+
+    async def _unlink_file(self, path: Path) -> None:
+        """异步删除文件。
+
+        Args:
+            path: 文件路径。
+        """
+        await asyncio.to_thread(os.unlink, path)
+
+    def _node_exists_in_transaction(self, table_name: str, node_id: int) -> bool:
+        """在事务内检查节点是否存在。
+
+        包括已提交和未提交的数据。
+
+        Args:
+            table_name: 节点表名。
+            node_id: 节点 ID。
+
+        Returns:
+            节点存在返回 True，否则返回 False。
+        """
+        result = self.conn.execute(
+            f"SELECT 1 FROM {table_name} WHERE __id = ? LIMIT 1",
+            [node_id],
+        ).fetchone()
+        return result is not None
+
+    def _validate_edge_references(
+        self,
+        edge_type: str,
+        items: list[dict[str, Any]],
+    ) -> None:
+        """验证边引用的节点是否存在。
+
+        在事务内执行，检查 source/target 节点是否存在于数据库中
+        （包括同一事务中刚插入的数据）。
+
+        Args:
+            edge_type: 边类型名称。
+            items: 边数据列表。
+
+        Raises:
+            ValueError: 当引用的节点不存在时抛出。
+        """
+        edge_def = self.ontology.edges.get(edge_type)
+        if edge_def is None:
+            return
+
+        source_node_def = self.ontology.nodes.get(edge_def.from_)
+        target_node_def = self.ontology.nodes.get(edge_def.to)
+
+        if source_node_def is None or target_node_def is None:
+            return
+
+        for idx, item in enumerate(items):
+            source = item.get("source", {})
+            target = item.get("target", {})
+
+            source_identity = [source.get(f) for f in source_node_def.identity]
+            source_id = compute_deterministic_id(source_identity)
+
+            if not self._node_exists_in_transaction(source_node_def.table, source_id):
+                raise ValueError(
+                    f"[{idx}] Cannot create '{edge_type}' relation: "
+                    f"Source '{edge_def.from_}' with identity {source} not found."
+                )
+
+            target_identity = [target.get(f) for f in target_node_def.identity]
+            target_id = compute_deterministic_id(target_identity)
+
+            if not self._node_exists_in_transaction(target_node_def.table, target_id):
+                raise ValueError(
+                    f"[{idx}] Cannot create '{edge_type}' relation: "
+                    f"Target '{edge_def.to}' with identity {target} not found."
+                )
+
+    async def _execute_import_in_transaction(
+        self,
+        nodes_data: list[dict[str, Any]],
+        edges_data: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """在单一事务中执行所有导入操作。
+
+        流程：
+        1. 开启事务
+        2. 导入所有节点
+        3. 导入所有边
+        4. 验证边引用完整性
+        5. 构建索引
+        6. 提交事务（失败则回滚）
+
+        Args:
+            nodes_data: 节点数据列表。
+            edges_data: 边数据列表。
+
+        Returns:
+            包含节点导入结果、边导入结果、索引结果和 ID 列表的字典。
+
+        Raises:
+            ValueError: 边引用验证失败时抛出（事务已回滚）。
+        """
+
+        def _execute() -> dict[str, Any]:
+            try:
+                self.conn.begin()
+
+                nodes_result = self._import_nodes_sync(nodes_data)
+                edges_result = self._import_edges_sync(edges_data)
+
+                for edge_type, items in self._group_edges_by_type(edges_data).items():
+                    upsert_items = [
+                        item for item in items if item.get("action", "upsert") == "upsert"
+                    ]
+                    if upsert_items:
+                        self._validate_edge_references(edge_type, upsert_items)
+
+                indexed_result, upserted_ids, deleted_ids = self._build_index_for_ids_sync(
+                    nodes_result, edges_result
+                )
+
+                self.conn.commit()
+                return {
+                    "nodes": nodes_result,
+                    "edges": edges_result,
+                    "indexed": indexed_result,
+                    "upserted_ids": upserted_ids,
+                    "deleted_ids": deleted_ids,
+                }
+
+            except Exception as e:
+                self.conn.rollback()
+                logger.error(f"Transaction rolled back: {e}")
+                raise
+
+        return await asyncio.to_thread(_execute)
+
+    def _import_nodes_sync(self, data: list[dict[str, Any]]) -> dict[str, Any]:
+        """同步导入节点（在事务内执行）。
+
+        Args:
+            data: 节点数据列表。
+
+        Returns:
+            导入统计。
+        """
+        upserted: dict[str, int] = {}
+        deleted: dict[str, int] = {}
+
+        grouped = self._group_items_by_type_and_action(data)
+
+        for node_type, actions in grouped.items():
+            if actions["upsert"]:
+                count = self._upsert_nodes_sync(node_type, actions["upsert"])
+                upserted[node_type] = count
+            if actions["delete"]:
+                count = self._delete_nodes_sync(node_type, actions["delete"])
+                deleted[node_type] = count
+
+        return {"upserted": upserted, "deleted": deleted}
+
+    def _import_edges_sync(self, data: list[dict[str, Any]]) -> dict[str, Any]:
+        """同步导入边（在事务内执行）。
+
+        Args:
+            data: 边数据列表。
+
+        Returns:
+            导入统计。
+        """
+        upserted: dict[str, int] = {}
+        deleted: dict[str, int] = {}
+
+        grouped = self._group_items_by_type_and_action(data)
+
+        for edge_type, actions in grouped.items():
+            if actions["upsert"]:
+                count = self._upsert_edges_sync(edge_type, actions["upsert"])
+                upserted[edge_type] = count
+            if actions["delete"]:
+                count = self._delete_edges_sync(edge_type, actions["delete"])
+                deleted[edge_type] = count
+
+        return {"upserted": upserted, "deleted": deleted}
+
+    def _group_items_by_type_and_action(
+        self, data: list[dict[str, Any]]
+    ) -> dict[str, dict[str, list]]:
+        """按类型和操作分组数据。
+
+        Args:
+            data: 数据列表。
+
+        Returns:
+            分组后的数据字典。
+        """
+        grouped: dict[str, dict[str, list]] = {}
+        for item in data:
+            item_type = item.get("type")
+            if item_type is None:
+                continue
+            action = item.get("action", "upsert")
+            if action not in ("upsert", "delete"):
+                action = "upsert"
+
+            if item_type not in grouped:
+                grouped[item_type] = {"upsert": [], "delete": []}
+            grouped[item_type][action].append(item)
+
+        return grouped
+
+    def _group_edges_by_type(self, data: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+        """按类型分组边数据。
+
+        Args:
+            data: 边数据列表。
+
+        Returns:
+            分组后的边数据字典。
+        """
+        result: dict[str, list[dict[str, Any]]] = {}
+        for item in data:
+            edge_type = item.get("type")
+            if edge_type is None:
+                continue
+            if edge_type not in result:
+                result[edge_type] = []
+            result[edge_type].append(item)
+        return result
+
+    def _upsert_nodes_sync(self, node_type: str, items: list[dict[str, Any]]) -> int:
+        """同步 upsert 节点（批量优化版）。
+
+        Args:
+            node_type: 节点类型名称。
+            items: 节点数据列表。
+
+        Returns:
+            导入的记录数。
+        """
+        node_def = self.ontology.nodes.get(node_type)
+        if node_def is None:
+            raise ValueError(f"Unknown node type: {node_type}")
+
+        if not items:
+            return 0
+
+        table_name = node_def.table
+        now = datetime.now(UTC)
+
+        records: list[dict[str, Any]] = []
+        for item in items:
+            record = {k: v for k, v in item.items() if k not in ("type", "action")}
+            identity_values = [record.get(f) for f in node_def.identity]
+            record["__id"] = compute_deterministic_id(identity_values)
+            record["__created_at"] = now
+            record["__updated_at"] = now
+            records.append(record)
+
+        columns = list(records[0].keys())
+        placeholders = ", ".join(["?" for _ in columns])
+        batch_params = [[record[c] for c in columns] for record in records]
+
+        self.conn.executemany(
+            f"INSERT OR REPLACE INTO {table_name} ({', '.join(columns)}) VALUES ({placeholders})",
+            batch_params,
+        )
+
+        return len(records)
+
+    def _delete_nodes_sync(self, node_type: str, items: list[dict[str, Any]]) -> int:
+        """同步删除节点（批量优化版）。
+
+        Args:
+            node_type: 节点类型名称。
+            items: 节点数据列表。
+
+        Returns:
+            删除的记录数。
+        """
+        node_def = self.ontology.nodes.get(node_type)
+        if node_def is None:
+            raise ValueError(f"Unknown node type: {node_type}")
+
+        if not items:
+            return 0
+
+        table_name = node_def.table
+
+        record_ids: list[int] = []
+        for item in items:
+            record = {k: v for k, v in item.items() if k not in ("type", "action")}
+            identity_values = [record.get(f) for f in node_def.identity]
+            record_id = compute_deterministic_id(identity_values)
+            record_ids.append(record_id)
+
+        placeholders = ", ".join(["?" for _ in record_ids])
+        self.conn.execute(
+            f"DELETE FROM {table_name} WHERE __id IN ({placeholders})",
+            record_ids,
+        )
+
+        return len(record_ids)
+
+    def _upsert_edges_sync(self, edge_type: str, items: list[dict[str, Any]]) -> int:
+        """同步 upsert 边（批量优化版）。
+
+        Args:
+            edge_type: 边类型名称。
+            items: 边数据列表。
+
+        Returns:
+            导入的记录数。
+        """
+        edge_def = self.ontology.edges.get(edge_type)
+        if edge_def is None:
+            raise ValueError(f"Unknown edge type: {edge_type}")
+
+        if not items:
+            return 0
+
+        table_name = f"edge_{edge_type}"
+        source_node = self.ontology.nodes.get(edge_def.from_)
+        target_node = self.ontology.nodes.get(edge_def.to)
+
+        if source_node is None or target_node is None:
+            raise ValueError(f"Invalid edge definition: {edge_type}")
+
+        now = datetime.now(UTC)
+
+        records: list[dict[str, Any]] = []
+        for item in items:
+            source = item.get("source", {})
+            target = item.get("target", {})
+
+            source_identity = [source.get(f) for f in source_node.identity]
+            target_identity = [target.get(f) for f in target_node.identity]
+
+            source_id = compute_deterministic_id(source_identity)
+            target_id = compute_deterministic_id(target_identity)
+
+            record: dict[str, Any] = {
+                "__id": compute_deterministic_id([source_id, target_id]),
+                "__from_id": source_id,
+                "__to_id": target_id,
+                "__created_at": now,
+                "__updated_at": now,
+            }
+
+            for k, v in item.items():
+                if k not in ("type", "action", "source", "target"):
+                    record[k] = v
+
+            records.append(record)
+
+        columns = list(records[0].keys())
+        placeholders = ", ".join(["?" for _ in columns])
+        batch_params = [[record[c] for c in columns] for record in records]
+
+        self.conn.executemany(
+            f"INSERT OR REPLACE INTO {table_name} ({', '.join(columns)}) VALUES ({placeholders})",
+            batch_params,
+        )
+
+        return len(records)
+
+    def _delete_edges_sync(self, edge_type: str, items: list[dict[str, Any]]) -> int:
+        """同步删除边（批量优化版）。
+
+        Args:
+            edge_type: 边类型名称。
+            items: 边数据列表。
+
+        Returns:
+            删除的记录数。
+        """
+        edge_def = self.ontology.edges.get(edge_type)
+        if edge_def is None:
+            raise ValueError(f"Unknown edge type: {edge_type}")
+
+        if not items:
+            return 0
+
+        table_name = f"edge_{edge_type}"
+        source_node = self.ontology.nodes.get(edge_def.from_)
+        target_node = self.ontology.nodes.get(edge_def.to)
+
+        if source_node is None or target_node is None:
+            raise ValueError(f"Invalid edge definition: {edge_type}")
+
+        record_ids: list[int] = []
+        for item in items:
+            source = item.get("source", {})
+            target = item.get("target", {})
+
+            source_identity = [source.get(f) for f in source_node.identity]
+            target_identity = [target.get(f) for f in target_node.identity]
+
+            source_id = compute_deterministic_id(source_identity)
+            target_id = compute_deterministic_id(target_identity)
+            record_id = compute_deterministic_id([source_id, target_id])
+            record_ids.append(record_id)
+
+        placeholders = ", ".join(["?" for _ in record_ids])
+        self.conn.execute(
+            f"DELETE FROM {table_name} WHERE __id IN ({placeholders})",
+            record_ids,
+        )
+
+        return len(record_ids)
+
+    def _build_index_for_ids_sync(
+        self,
+        nodes_result: dict[str, Any],
+        edges_result: dict[str, Any],
+    ) -> tuple[dict[str, int], dict[str, list[int]], dict[str, list[int]]]:
+        """在事务内为变更的记录构建索引。
+
+        Args:
+            nodes_result: 节点导入结果。
+            edges_result: 边导入结果（暂不处理边的索引）。
+
+        Returns:
+            (索引统计, upserted_ids, deleted_ids)
+        """
+        indexed: dict[str, int] = {}
+        upserted_ids: dict[str, list[int]] = {}
+        deleted_ids: dict[str, list[int]] = {}
+
+        for node_type in nodes_result.get("upserted", {}).keys():
+            node_def = self.ontology.nodes.get(node_type)
+            if node_def is None:
+                continue
+
+            search_config = getattr(node_def, "search", None)
+            if not search_config:
+                continue
+
+            fts_fields: list[str] = getattr(search_config, "full_text", []) or []
+            vector_fields: list[str] = getattr(search_config, "vectors", []) or []
+            all_fields: set[str] = set(fts_fields) | set(vector_fields)
+
+            if not all_fields:
+                continue
+
+            table_name = node_def.table
+            fields_str = ", ".join(all_fields)
+
+            rows = self.conn.execute(
+                f"SELECT __id, {fields_str} FROM {table_name} ORDER BY {node_def.identity[0]}"
+            ).fetchall()
+
+            type_upserted_ids: list[int] = []
+            count = 0
+
+            for row in rows:
+                source_id = row[0]
+                type_upserted_ids.append(source_id)
+
+                field_values = row[1:]
+                field_list = list(all_fields)
+
+                for field_idx, field_name in enumerate(field_list):
+                    content = field_values[field_idx]
+                    if not content or not isinstance(content, str):
+                        continue
+
+                    chunks = self._chunk_text_sync(content)
+
+                    for chunk_seq, chunk in enumerate(chunks):
+                        content_hash = self._compute_hash_sync(chunk)
+
+                        fts_content = None
+                        if field_name in fts_fields:
+                            fts_content = self._get_or_compute_fts_sync(chunk, content_hash)
+
+                        vector = None
+                        if field_name in vector_fields:
+                            vector = self._get_or_compute_vector_sync(chunk, content_hash)
+
+                        self.conn.execute(
+                            f"INSERT OR REPLACE INTO {SEARCH_INDEX_TABLE} "
+                            "(source_table, source_id, source_field, chunk_seq, content, "
+                            "fts_content, vector, content_hash, created_at) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            (
+                                table_name,
+                                source_id,
+                                field_name,
+                                chunk_seq,
+                                chunk,
+                                fts_content,
+                                vector,
+                                content_hash,
+                                datetime.now(UTC),
+                            ),
+                        )
+                        count += 1
+
+            indexed[node_type] = count
+            upserted_ids[node_type] = type_upserted_ids
+            deleted_ids[node_type] = []
+
+        for node_type in nodes_result.get("deleted", {}).keys():
+            node_def = self.ontology.nodes.get(node_type)
+            if node_def is None:
+                continue
+
+            table_name = node_def.table
+
+            self.conn.execute(
+                f"DELETE FROM {SEARCH_INDEX_TABLE} WHERE source_table = ?",
+                [table_name],
+            )
+
+            if node_type not in upserted_ids:
+                upserted_ids[node_type] = []
+            deleted_ids[node_type] = []
+
+        return indexed, upserted_ids, deleted_ids
+
+    def _chunk_text_sync(self, text: str) -> list[str]:
+        """将文本切分为多个片段（同步版本）。
+
+        Args:
+            text: 待切分的文本。
+
+        Returns:
+            文本片段列表。
+        """
+        chunk_size = self.config.global_config.chunk_size
+        if len(text) <= chunk_size:
+            return [text]
+
+        chunks = []
+        for i in range(0, len(text), chunk_size):
+            chunks.append(text[i : i + chunk_size])
+        return chunks
+
+    def _compute_hash_sync(self, text: str) -> str:
+        """计算文本哈希（同步版本）。
+
+        Args:
+            text: 待哈希的文本。
+
+        Returns:
+            文本哈希值。
+        """
+        return hashlib.md5(text.encode("utf-8")).hexdigest()
+
+    def _get_or_compute_fts_sync(self, text: str, content_hash: str) -> str:
+        """获取或计算分词结果（同步版本）。
+
+        优先从缓存获取，缓存未命中则计算并存入缓存。
+
+        Args:
+            text: 待分词文本。
+            content_hash: 文本哈希。
+
+        Returns:
+            分词结果（空格分隔）。
+        """
+        row = self.conn.execute(
+            f"SELECT fts_content FROM {SEARCH_CACHE_TABLE} WHERE content_hash = ?",
+            [content_hash],
+        ).fetchone()
+
+        if row and row[0]:
+            return row[0]
+
+        fts_content = self._segment_text_sync(text)
+
+        now = datetime.now(UTC)
+        self.conn.execute(
+            f"INSERT OR REPLACE INTO {SEARCH_CACHE_TABLE} "
+            "(content_hash, fts_content, last_used, created_at) VALUES (?, ?, ?, ?)",
+            [content_hash, fts_content, now, now],
+        )
+
+        return fts_content
+
+    def _get_or_compute_vector_sync(self, text: str, content_hash: str) -> list[float] | None:
+        """获取或计算向量嵌入（同步版本）。
+
+        优先从缓存获取，缓存未命中则返回 None（向量化需要异步 API）。
+
+        Args:
+            text: 待向量化文本。
+            content_hash: 文本哈希。
+
+        Returns:
+            向量嵌入，如果无法同步计算则返回 None。
+        """
+        row = self.conn.execute(
+            f"SELECT vector FROM {SEARCH_CACHE_TABLE} WHERE content_hash = ?",
+            [content_hash],
+        ).fetchone()
+
+        if row and row[0]:
+            return row[0]
+
+        return None
+
+    def _segment_text_sync(self, text: str) -> str:
+        """分词处理（同步版本）。
+
+        Args:
+            text: 待分词文本。
+
+        Returns:
+            分词结果。
+        """
+        if hasattr(self, "_segment_sync"):
+            return self._segment_sync(text)
+        return text
+
+    async def _dump_to_shadow_dir(
+        self,
+        affected_node_types: set[str],
+        edges_result: dict[str, Any],
+        upserted_ids: dict[str, list[int]],
+        deleted_ids: dict[str, list[int]],
+    ) -> dict[str, int]:
+        """导出数据到影子目录。
+
+        Args:
+            affected_node_types: 受影响的节点类型集合。
+            edges_result: 边导入结果。
+            upserted_ids: 新增/更新的 ID 列表。
+            deleted_ids: 删除的 ID 列表。
+
+        Returns:
+            导出统计。
+        """
+        data_dir = self.config.storage.data_dir
+        shadow_dir = data_dir.parent / f"{data_dir.name}_shadow"
+
+        def _prepare_shadow_dir() -> None:
+            if shadow_dir.exists():
+                shutil.rmtree(shadow_dir)
+            shadow_dir.mkdir(parents=True)
+
+        await asyncio.to_thread(_prepare_shadow_dir)
+
+        dumped: dict[str, int] = {}
+
+        for node_type in affected_node_types:
+            node_def = self.ontology.nodes.get(node_type)
+            if node_def is None:
+                continue
+
+            output_dir = shadow_dir / "nodes" / node_def.table
+            count = await self._dump_table_to_dir(
+                node_def.table,
+                output_dir,
+                node_def.identity[0],
+            )
+            dumped[node_type] = count
+
+        for edge_name in edges_result.get("upserted", {}).keys():
+            edge_def = self.ontology.edges.get(edge_name)
+            if edge_def is None:
+                continue
+
+            table_name = f"edge_{edge_name}"
+            output_dir = shadow_dir / "edges" / edge_name.lower()
+            count = await self._dump_table_to_dir(
+                table_name,
+                output_dir,
+                "__from_id",
+            )
+            dumped[edge_name] = count
+
+        for edge_name in edges_result.get("deleted", {}).keys():
+            edge_def = self.ontology.edges.get(edge_name)
+            if edge_def is None:
+                continue
+
+            table_name = f"edge_{edge_name}"
+            output_dir = shadow_dir / "edges" / edge_name.lower()
+            if edge_name not in dumped:
+                count = await self._dump_table_to_dir(
+                    table_name,
+                    output_dir,
+                    "__from_id",
+                )
+                dumped[edge_name] = count
+
+        cache_count = await self._dump_cache_to_parquet(shadow_dir)
+        if cache_count > 0:
+            dumped["_sys_search_cache"] = cache_count
+
+        return dumped
+
+    async def _dump_table_to_dir(
+        self,
+        table_name: str,
+        output_dir: Path,
+        identity_field: str,
+    ) -> int:
+        """导出表数据到指定目录。
+
+        Args:
+            table_name: 表名。
+            output_dir: 输出目录。
+            identity_field: identity 字段名，用于排序。
+
+        Returns:
+            导出的记录数。
+        """
+        output_dir = output_dir.resolve()
+        await asyncio.to_thread(output_dir.mkdir, parents=True, exist_ok=True)
+
+        def _execute_dump() -> int:
+            count_row = self.conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()
+            record_count = count_row[0] if count_row else 0
+
+            if record_count == 0:
+                return 0
+
+            temp_file = output_dir / "_temp.jsonl"
+            final_file = output_dir / "part_0.jsonl"
+
+            self.conn.execute(
+                f"COPY ("
+                f"  SELECT * FROM {table_name} "
+                f"  ORDER BY {identity_field}"
+                f") TO '{temp_file}' (FORMAT JSON)"
+            )
+
+            shutil.move(str(temp_file), str(final_file))
+            return record_count
+
+        return await asyncio.to_thread(_execute_dump)
+
+    async def _dump_cache_to_parquet(self, shadow_dir: Path) -> int:
+        """导出搜索缓存到 Parquet 文件。
+
+        Args:
+            shadow_dir: 影子目录路径。
+
+        Returns:
+            导出的缓存条目数。
+        """
+        cache_dir = shadow_dir / "cache"
+        await asyncio.to_thread(cache_dir.mkdir, parents=True, exist_ok=True)
+        cache_path = cache_dir / "search_cache.parquet"
+
+        def _execute_dump() -> int:
+            row = self.conn.execute(f"SELECT COUNT(*) FROM {SEARCH_CACHE_TABLE}").fetchone()
+            count = row[0] if row else 0
+
+            if count == 0:
+                return 0
+
+            self.conn.execute(f"COPY {SEARCH_CACHE_TABLE} TO '{cache_path}' (FORMAT PARQUET)")
+            return count
+
+        return await asyncio.to_thread(_execute_dump)
+
+    async def _atomic_replace_data_dir(self) -> None:
+        """原子替换 data/ 目录。
+
+        使用操作系统级别的 rename 操作，确保原子性。
+        """
+        data_dir = self.config.storage.data_dir
+        shadow_dir = data_dir.parent / f"{data_dir.name}_shadow"
+        backup_dir = data_dir.parent / f"{data_dir.name}_backup"
+
+        def _replace() -> None:
+            if data_dir.exists():
+                if backup_dir.exists():
+                    shutil.rmtree(backup_dir)
+                os.rename(str(data_dir), str(backup_dir))
+
+            os.rename(str(shadow_dir), str(data_dir))
+
+            if backup_dir.exists():
+                shutil.rmtree(backup_dir)
+
+        await asyncio.to_thread(_replace)

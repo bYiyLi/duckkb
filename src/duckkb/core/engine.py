@@ -9,6 +9,7 @@ from duckkb.core.mixins import (
     ConfigMixin,
     DBMixin,
     EmbeddingMixin,
+    ImportMixin,
     IndexMixin,
     OntologyMixin,
     SearchMixin,
@@ -27,6 +28,7 @@ class Engine(
     EmbeddingMixin,
     IndexMixin,
     SearchMixin,
+    ImportMixin,
 ):
     """知识库引擎。
 
@@ -44,6 +46,7 @@ class Engine(
     7. EmbeddingMixin - 向量嵌入
     8. IndexMixin - 搜索索引
     9. SearchMixin - 混合检索
+    10. ImportMixin - 知识导入
 
     Attributes:
         kb_path: 知识库根目录。

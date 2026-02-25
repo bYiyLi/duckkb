@@ -1,5 +1,6 @@
 """DuckMCP - 将知识库引擎暴露为 MCP 工具。"""
 
+import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any, cast
@@ -27,12 +28,12 @@ async def engine_lifespan(server: FastMCP[Any]) -> AsyncIterator[dict[str, Any]]
     logger.info("Initializing knowledge base engine...")
     duck_mcp.initialize()
     logger.info("Knowledge base engine initialized.")
-
-    yield {"engine": duck_mcp}
-
-    logger.info("Closing knowledge base engine...")
-    duck_mcp.close()
-    logger.info("Knowledge base engine closed.")
+    try:
+        yield {"engine": duck_mcp}
+    finally:
+        logger.info("Closing knowledge base engine...")
+        duck_mcp.close()
+        logger.info("Knowledge base engine closed.")
 
 
 class DuckMCP(Engine, FastMCP):
@@ -45,6 +46,7 @@ class DuckMCP(Engine, FastMCP):
     - 索引构建与管理
     - 数据加载与导出
     - 本体管理
+    - 知识导入
 
     通过继承 FastMCP 获得 MCP 服务能力：
     - 工具注册与暴露
@@ -108,8 +110,66 @@ class DuckMCP(Engine, FastMCP):
         self._register_tools()
 
     def _register_tools(self) -> None:
-        """注册 MCP 工具。
+        """注册 MCP 工具。"""
+        self._register_knowledge_schema_tool()
+        self._register_import_knowledge_bundle_tool()
 
-        TODO: 实现完整的工具注册。
-        """
-        pass
+    def _register_knowledge_schema_tool(self) -> None:
+        """注册 get_knowledge_schema 工具。"""
+        @self.tool()
+        def get_knowledge_schema() -> str:
+            """获取知识库校验 Schema。
+
+            返回当前知识库的完整校验规则（JSON Schema Draft 7），
+            用于验证 import_knowledge_bundle 的输入数据。
+
+            返回的 Schema 定义了 YAML 文件的合法结构：
+            - 根节点为数组类型
+            - 每个元素必须包含 type 字段指定实体类型
+            - 节点类型需要提供 identity 字段
+            - 边类型需要提供 source 和 target 对象
+
+            Returns:
+                JSON 格式的 Schema 定义，包含：
+                - full_bundle_schema: 完整的 JSON Schema
+                - example_yaml: YAML 示例
+            """
+            result = self.get_bundle_schema()
+            return json.dumps(result, ensure_ascii=False, indent=2)
+
+    def _register_import_knowledge_bundle_tool(self) -> None:
+        """注册 import_knowledge_bundle 工具。"""
+        @self.tool()
+        async def import_knowledge_bundle(temp_file_path: str) -> str:
+            """导入知识包。
+
+            从 YAML 文件导入数据到知识库。文件格式为数组，每个元素包含：
+            - type: 实体类型（节点类型或边类型名称）
+            - action: 操作类型（upsert/delete），默认 upsert
+            - 节点：identity 字段（根据 get_knowledge_schema 返回的 Schema）
+            - 边：source 和 target 对象
+
+            导入前会使用 get_knowledge_schema 返回的 Schema 进行完整校验。
+            校验失败会返回精确的错误位置，便于修复。
+
+            导入后自动触发：
+            - 索引重建（受影响的节点类型）
+            - 持久化导出（JSONL 文件）
+
+            Args:
+                temp_file_path: 临时 YAML 文件的绝对路径。
+
+            Returns:
+                JSON 格式的操作结果，包含：
+                - status: 操作状态
+                - nodes: 节点导入统计
+                - edges: 边导入统计
+                - indexed: 索引构建统计
+                - dumped: 持久化导出统计
+
+            Raises:
+                ValueError: 校验失败时抛出，包含精确的错误位置。
+                FileNotFoundError: 临时文件不存在时抛出。
+            """
+            result = await self.import_knowledge_bundle(temp_file_path)
+            return json.dumps(result, ensure_ascii=False, indent=2)
