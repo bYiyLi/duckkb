@@ -1,5 +1,21 @@
-"""
-DuckKB MCP 服务模块
+"""DuckKB MCP 服务模块
+
+.. deprecated:: 0.2.0
+    请使用 duckkb.mcp.DuckMCP 替代。
+    该模块将在 0.3.0 版本中移除。
+
+    迁移示例：
+    ```python
+    # 旧方式
+    from duckkb.mcp.server import mcp
+
+    mcp.run()
+
+    # 新方式
+    from duckkb.mcp import DuckMCP
+
+    DuckMCP("/path/to/kb").run()
+    ```
 
 本模块提供基于 FastMCP 的 Model Context Protocol (MCP) 服务实现，
 为 AI 助手提供知识库操作工具集。
@@ -18,6 +34,7 @@ DuckKB MCP 服务模块
 
 import asyncio
 import json
+import warnings
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
@@ -32,13 +49,13 @@ from duckkb.constants import (
     DB_FILE_NAME,
     MAX_ERROR_FEEDBACK,
 )
-from duckkb.database.schema import get_schema_info as _get_schema_info
-from duckkb.database.schema import init_schema
 from duckkb.database.engine.backup import BackupManager
 from duckkb.database.engine.manager import KnowledgeBaseManager
 from duckkb.database.engine.migration import MigrationManager
 from duckkb.database.engine.search import query_raw_sql as _query
 from duckkb.database.engine.search import smart_search as _search
+from duckkb.database.schema import get_schema_info as _get_schema_info
+from duckkb.database.schema import init_schema
 from duckkb.logger import logger
 from duckkb.utils.file_ops import (
     file_exists,
@@ -49,7 +66,12 @@ from duckkb.utils.file_ops import (
 )
 from duckkb.utils.text import init_jieba_async
 
-# Global manager instance
+warnings.warn(
+    "duckkb.mcp.server 已废弃，请使用 duckkb.mcp.DuckMCP",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
 manager: KnowledgeBaseManager | None = None
 
 
@@ -184,7 +206,6 @@ async def sync_knowledge_base(
         content = await read_file(path)
         migration_manager = MigrationManager(ctx.kb_path)
 
-        # Run migration in a separate thread to avoid blocking
         result = await asyncio.to_thread(migration_manager.migrate, content, force=force)
         return json.dumps(result.to_dict(), ensure_ascii=False)
 
@@ -299,17 +320,16 @@ async def validate_and_import(table_name: str, temp_file_path: str) -> str:
     BATCH_SIZE = 100
     errors = []
 
-    # Get schema for validation
     schema = None
-    if manager.ontology_engine and manager.ontology_engine.ontology and manager.ontology_engine.ontology.nodes:
-        # Check if table_name matches any node's table property
-        # The key in nodes dict is node type name, not necessarily table name.
-        # But usually they match or we need to find by table name.
+    if (
+        manager.ontology_engine
+        and manager.ontology_engine.ontology
+        and manager.ontology_engine.ontology.nodes
+    ):
         node = manager.ontology_engine.get_node_by_table(table_name)
         if node and node.json_schema:
             schema = node.json_schema
 
-    # Pass 1: Validation
     try:
         line_num = 0
         async for line in read_file_lines(path):
@@ -329,7 +349,6 @@ async def validate_and_import(table_name: str, temp_file_path: str) -> str:
                     errors.append(f"Line {line_num}: Missing required field 'id'")
                     continue
 
-                # Schema validation
                 if schema and "required" in schema:
                     missing = [f for f in schema["required"] if f not in record]
                     if missing:
@@ -347,7 +366,6 @@ async def validate_and_import(table_name: str, temp_file_path: str) -> str:
             error_msg += "\n..."
         raise ValueError(error_msg)
 
-    # Pass 2: Import using Manager
     total_upserted = 0
     buffer = []
 
@@ -364,7 +382,6 @@ async def validate_and_import(table_name: str, temp_file_path: str) -> str:
                 total_upserted += res.get("upserted_count", 0)
                 buffer = []
 
-        # Process remaining
         if buffer:
             res = await manager.add_documents(table_name, buffer)
             total_upserted += res.get("upserted_count", 0)
