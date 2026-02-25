@@ -1,9 +1,12 @@
 """检索能力 Mixin。"""
 
 import asyncio
+import re
 from typing import Any
 
-from duckkb.constants import validate_table_name
+import orjson
+
+from duckkb.constants import QUERY_DEFAULT_LIMIT, QUERY_RESULT_SIZE_LIMIT, validate_table_name
 from duckkb.core.base import BaseEngine
 from duckkb.exceptions import DatabaseError
 from duckkb.logger import logger
@@ -298,6 +301,107 @@ class SearchMixin(BaseEngine):
             return dict(zip(columns, row, strict=True))
 
         return await asyncio.to_thread(_fetch)
+
+    async def query_raw_sql(self, sql: str) -> list[dict[str, Any]]:
+        """安全执行原始 SQL 查询。
+
+        安全检查：
+        1. 只允许 SELECT 查询（白名单模式）。
+        2. 禁止危险关键字。
+        3. 移除 SQL 注释后检查。
+        4. 自动添加 LIMIT。
+        5. 结果大小限制。
+
+        Args:
+            sql: 原始 SQL 查询字符串。
+
+        Returns:
+            查询结果字典列表。
+
+        Raises:
+            DatabaseError: SQL 包含禁止的关键字或不是 SELECT 查询。
+            ValueError: 结果集大小超限或执行失败。
+        """
+        sql_stripped = sql.strip()
+        sql_upper = sql_stripped.upper()
+
+        if not sql_upper.startswith("SELECT"):
+            raise DatabaseError("Only SELECT queries are allowed.")
+
+        sql_no_comments = re.sub(r"--.*$", "", sql_stripped, flags=re.MULTILINE)
+        sql_no_comments = re.sub(r"/\*.*?\*/", "", sql_no_comments, flags=re.DOTALL)
+        sql_no_comments_upper = sql_no_comments.upper()
+
+        forbidden = [
+            "INSERT",
+            "UPDATE",
+            "DELETE",
+            "DROP",
+            "CREATE",
+            "ALTER",
+            "TRUNCATE",
+            "EXEC",
+            "EXECUTE",
+            "GRANT",
+            "REVOKE",
+            "ATTACH",
+            "DETACH",
+            "PRAGMA",
+            "IMPORT",
+            "EXPORT",
+            "COPY",
+            "LOAD",
+            "INSTALL",
+            "VACUUM",
+            "BEGIN",
+            "COMMIT",
+            "ROLLBACK",
+        ]
+        forbidden_pattern = r"\b(" + "|".join(forbidden) + r")\b"
+        if re.search(forbidden_pattern, sql_no_comments_upper):
+            raise DatabaseError("Forbidden keyword in SQL query.")
+
+        if not re.search(r"\bLIMIT\s+\d+", sql_upper):
+            sql = sql_stripped + f" LIMIT {QUERY_DEFAULT_LIMIT}"
+
+        return await asyncio.to_thread(self._execute_raw_sql, sql)
+
+    def _execute_raw_sql(self, sql: str) -> list[dict[str, Any]]:
+        """执行原始 SQL 查询并返回字典列表形式的结果。
+
+        Args:
+            sql: 要执行的 SQL 查询。
+
+        Returns:
+            字典列表，键为列名，值为行值。
+
+        Raises:
+            ValueError: 结果集大小超限或执行失败。
+        """
+        try:
+            cursor = self.conn.execute(sql)
+            if not cursor.description:
+                return []
+            columns = [desc[0] for desc in cursor.description]
+            rows = cursor.fetchall()
+
+            result = [dict(zip(columns, row, strict=True)) for row in rows]
+
+            try:
+                json_bytes = orjson.dumps(result)
+                if len(json_bytes) > QUERY_RESULT_SIZE_LIMIT:
+                    raise ValueError(
+                        f"Result set size exceeds {QUERY_RESULT_SIZE_LIMIT // (1024 * 1024)}MB limit. Please add LIMIT or refine your query."
+                    )
+            except ValueError:
+                raise
+            except (orjson.JSONEncodeError, TypeError):
+                pass
+
+            return result
+        except Exception as e:
+            logger.error(f"SQL execution failed: {e}")
+            raise ValueError(str(e)) from e
 
     def _format_vector_literal(self, vector: list[float]) -> str:
         """格式化向量为 SQL 字面量。"""

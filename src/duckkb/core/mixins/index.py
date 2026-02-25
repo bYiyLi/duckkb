@@ -127,15 +127,13 @@ class IndexMixin(BaseEngine):
 
         def _fetch_records() -> list[tuple]:
             fields_str = ", ".join(all_fields)
-            return self.conn.execute(
-                f"SELECT __id, {fields_str} FROM {table_name}"
-            ).fetchall()
+            return self.conn.execute(f"SELECT __id, {fields_str} FROM {table_name}").fetchall()
 
         records = await asyncio.to_thread(_fetch_records)
         indexed = 0
 
         for i in range(0, len(records), batch_size):
-            batch = records[i:i + batch_size]
+            batch = records[i : i + batch_size]
             batch_entries = await self._process_batch(
                 batch, table_name, all_fields, set(fts_fields), set(vector_fields)
             )
@@ -181,17 +179,19 @@ class IndexMixin(BaseEngine):
                     if field_name in vector_fields:
                         vector = await self._get_or_compute_vector(chunk, content_hash)
 
-                    entries.append((
-                        table_name,
-                        source_id,
-                        field_name,
-                        chunk_seq,
-                        chunk,
-                        fts_content,
-                        vector,
-                        content_hash,
-                        datetime.now(UTC),
-                    ))
+                    entries.append(
+                        (
+                            table_name,
+                            source_id,
+                            field_name,
+                            chunk_seq,
+                            chunk,
+                            fts_content,
+                            vector,
+                            content_hash,
+                            datetime.now(UTC),
+                        )
+                    )
 
         return entries
 
@@ -209,7 +209,7 @@ class IndexMixin(BaseEngine):
 
         chunks = []
         for i in range(0, len(text), self.chunk_size):
-            chunks.append(text[i:i + self.chunk_size])
+            chunks.append(text[i : i + self.chunk_size])
         return chunks
 
     def _compute_hash(self, text: str) -> str:
@@ -228,6 +228,7 @@ class IndexMixin(BaseEngine):
         Returns:
             分词结果（空格分隔）。
         """
+
         def _get_cached() -> str | None:
             row = self.conn.execute(
                 f"SELECT fts_content FROM {SEARCH_CACHE_TABLE} WHERE content_hash = ?",
@@ -252,9 +253,7 @@ class IndexMixin(BaseEngine):
         await asyncio.to_thread(_cache_it)
         return fts_content
 
-    async def _get_or_compute_vector(
-        self, text: str, content_hash: str
-    ) -> list[float] | None:
+    async def _get_or_compute_vector(self, text: str, content_hash: str) -> list[float] | None:
         """获取或计算向量嵌入。
 
         优先从缓存获取，缓存未命中则计算并存入缓存。
@@ -266,6 +265,7 @@ class IndexMixin(BaseEngine):
         Returns:
             向量嵌入。
         """
+
         def _get_cached() -> list[float] | None:
             row = self.conn.execute(
                 f"SELECT vector FROM {SEARCH_CACHE_TABLE} WHERE content_hash = ?",
@@ -359,9 +359,7 @@ class IndexMixin(BaseEngine):
                 f"SELECT content_hash, fts_content, vector, last_used, created_at "
                 f"FROM read_parquet('{path}')"
             )
-            row = self.conn.execute(
-                f"SELECT COUNT(*) FROM {SEARCH_CACHE_TABLE}"
-            ).fetchone()
+            row = self.conn.execute(f"SELECT COUNT(*) FROM {SEARCH_CACHE_TABLE}").fetchone()
             return row[0] if row else 0
 
         count = await asyncio.to_thread(_load)
@@ -380,14 +378,10 @@ class IndexMixin(BaseEngine):
         path.parent.mkdir(parents=True, exist_ok=True)
 
         def _save() -> int:
-            row = self.conn.execute(
-                f"SELECT COUNT(*) FROM {SEARCH_CACHE_TABLE}"
-            ).fetchone()
+            row = self.conn.execute(f"SELECT COUNT(*) FROM {SEARCH_CACHE_TABLE}").fetchone()
             count = row[0] if row else 0
 
-            self.conn.execute(
-                f"COPY {SEARCH_CACHE_TABLE} TO '{path}' (FORMAT PARQUET)"
-            )
+            self.conn.execute(f"COPY {SEARCH_CACHE_TABLE} TO '{path}' (FORMAT PARQUET)")
             return count
 
         count = await asyncio.to_thread(_save)
@@ -403,6 +397,7 @@ class IndexMixin(BaseEngine):
         Returns:
             删除的条目数。
         """
+
         def _clean() -> int:
             result = self.conn.execute(
                 f"DELETE FROM {SEARCH_CACHE_TABLE} "

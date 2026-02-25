@@ -77,6 +77,7 @@ class TokenizerMixin(BaseEngine):
 
         def _do_segment() -> str:
             import jieba
+
             return " ".join(jieba.cut_for_search(text))
 
         return await asyncio.to_thread(_do_segment)

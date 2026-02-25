@@ -90,7 +90,7 @@ class ChunkingMixin(BaseEngine):
 
         import re
 
-        sentence_endings = re.compile(r'[。！？.!?]\s*')
+        sentence_endings = re.compile(r"[。！？.!?]\s*")
         chunks: list[str] = []
         current_chunk = ""
 

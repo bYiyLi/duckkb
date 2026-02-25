@@ -113,9 +113,14 @@ class DuckMCP(Engine, FastMCP):
         """注册 MCP 工具。"""
         self._register_knowledge_schema_tool()
         self._register_import_knowledge_bundle_tool()
+        self._register_search_tool()
+        self._register_vector_search_tool()
+        self._register_fts_search_tool()
+        self._register_get_source_record_tool()
 
     def _register_knowledge_schema_tool(self) -> None:
         """注册 get_knowledge_schema 工具。"""
+
         @self.tool()
         def get_knowledge_schema() -> str:
             """获取知识库校验 Schema。
@@ -139,6 +144,7 @@ class DuckMCP(Engine, FastMCP):
 
     def _register_import_knowledge_bundle_tool(self) -> None:
         """注册 import_knowledge_bundle 工具。"""
+
         @self.tool()
         async def import_knowledge_bundle(temp_file_path: str) -> str:
             """导入知识包。
@@ -172,4 +178,153 @@ class DuckMCP(Engine, FastMCP):
                 FileNotFoundError: 临时文件不存在时抛出。
             """
             result = await self.import_knowledge_bundle(temp_file_path)
+            return json.dumps(result, ensure_ascii=False, indent=2)
+
+    def _register_query_raw_sql_tool(self) -> None:
+        """注册 query_raw_sql 工具。"""
+
+        @self.tool()
+        async def query_raw_sql(sql: str) -> str:
+            """执行只读 SQL 查询。
+
+            安全地执行原始 SQL 查询语句，仅支持 SELECT 操作。
+            系统会自动应用 LIMIT 限制，防止返回过多数据。
+
+            安全检查：
+            - 只允许 SELECT 查询
+            - 禁止危险关键字（INSERT, UPDATE, DELETE 等）
+            - 自动添加 LIMIT（默认 1000）
+            - 结果大小限制（2MB）
+
+            Args:
+                sql: 要执行的 SQL 查询语句，必须是 SELECT 语句。
+
+            Returns:
+                JSON 格式的查询结果列表。
+
+            Raises:
+                ValueError: SQL 语句不是只读查询时抛出。
+            """
+            results = await self.query_raw_sql(sql)
+            return json.dumps(results, ensure_ascii=False, default=str)
+
+    def _register_search_tool(self) -> None:
+        """注册 search 工具。"""
+
+        @self.tool()
+        async def search(
+            query: str,
+            node_type: str | None = None,
+            limit: int = 10,
+            alpha: float = 0.5,
+        ) -> str:
+            """智能混合搜索（RRF 融合）。
+
+            结合向量语义检索和全文关键词检索，使用 RRF 算法融合结果。
+            向量检索基于语义相似性，全文检索基于关键词匹配。
+
+            Args:
+                query: 搜索查询文本。
+                node_type: 节点类型过滤器（可选），限定搜索范围到指定节点类型。
+                limit: 返回结果数量，默认 10。
+                alpha: 向量搜索权重 (0.0-1.0)，默认 0.5。
+                    0.0 表示仅使用全文检索，1.0 表示仅使用向量检索。
+
+            Returns:
+                JSON 格式的搜索结果列表，每个结果包含：
+                - source_table: 源表名
+                - source_id: 源记录 ID
+                - source_field: 源字段名
+                - chunk_seq: 分块序号
+                - content: 匹配的文本内容
+                - score: 相关性分数
+            """
+            result = await self.search(
+                query,
+                node_type=node_type,
+                limit=limit,
+                alpha=alpha,
+            )
+            return json.dumps(result, ensure_ascii=False, indent=2)
+
+    def _register_vector_search_tool(self) -> None:
+        """注册 vector_search 工具。"""
+
+        @self.tool()
+        async def vector_search(
+            query: str,
+            node_type: str | None = None,
+            limit: int = 10,
+        ) -> str:
+            """纯向量语义检索。
+
+            基于向量相似度进行语义检索，适合概念性、模糊性查询。
+
+            Args:
+                query: 搜索查询文本。
+                node_type: 节点类型过滤器（可选）。
+                limit: 返回结果数量，默认 10。
+
+            Returns:
+                JSON 格式的搜索结果列表。
+            """
+            result = await self.vector_search(
+                query,
+                node_type=node_type,
+                limit=limit,
+            )
+            return json.dumps(result, ensure_ascii=False, indent=2)
+
+    def _register_fts_search_tool(self) -> None:
+        """注册 fts_search 工具。"""
+
+        @self.tool()
+        async def fts_search(
+            query: str,
+            node_type: str | None = None,
+            limit: int = 10,
+        ) -> str:
+            """纯全文关键词检索。
+
+            基于全文索引进行关键词匹配，适合精确词汇查询。
+
+            Args:
+                query: 搜索查询文本。
+                node_type: 节点类型过滤器（可选）。
+                limit: 返回结果数量，默认 10。
+
+            Returns:
+                JSON 格式的搜索结果列表。
+            """
+            result = await self.fts_search(
+                query,
+                node_type=node_type,
+                limit=limit,
+            )
+            return json.dumps(result, ensure_ascii=False, indent=2)
+
+    def _register_get_source_record_tool(self) -> None:
+        """注册 get_source_record 工具。"""
+
+        @self.tool()
+        async def get_source_record(
+            source_table: str,
+            source_id: int,
+        ) -> str:
+            """根据搜索结果回捞原始业务记录。
+
+            从搜索结果中获取的 source_table 和 source_id，
+            查询原始业务表中的完整记录。
+
+            Args:
+                source_table: 源表名（来自搜索结果的 source_table 字段）。
+                source_id: 源记录 ID（来自搜索结果的 source_id 字段）。
+
+            Returns:
+                JSON 格式的原始业务记录，不存在时返回 null。
+            """
+            result = await self.get_source_record(
+                source_table=source_table,
+                source_id=source_id,
+            )
             return json.dumps(result, ensure_ascii=False, indent=2)

@@ -7,7 +7,7 @@ from duckkb.config import (
     GlobalConfig,
     KBConfig,
 )
-from duckkb.database.engine.ontology import Ontology
+from duckkb.core.models.ontology import Ontology
 
 
 def test_default_kb_config():

@@ -9,7 +9,7 @@ import duckdb
 if TYPE_CHECKING:
     from duckkb.config import KBConfig
     from duckkb.core.config import CoreConfig
-    from duckkb.database.engine.ontology import Ontology
+    from duckkb.core.models.ontology import Ontology
 
 
 class BaseEngine(ABC):

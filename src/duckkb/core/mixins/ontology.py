@@ -3,7 +3,7 @@
 from typing import Any
 
 from duckkb.core.base import BaseEngine
-from duckkb.database.engine.ontology import EdgeType, NodeType, Ontology
+from duckkb.core.models.ontology import EdgeType, NodeType, Ontology
 from duckkb.logger import logger
 
 JSON_TO_DUCKDB_TYPE_MAP = {
@@ -63,7 +63,9 @@ class OntologyMixin(BaseEngine):
             logger.debug(f"Creating edge table: {table_name}")
             self.conn.execute(ddl)
 
-        logger.info(f"Schema synced: {len(self.ontology.nodes)} nodes, {len(self.ontology.edges)} edges")
+        logger.info(
+            f"Schema synced: {len(self.ontology.nodes)} nodes, {len(self.ontology.edges)} edges"
+        )
 
     @staticmethod
     def _json_type_to_duckdb(prop_def: dict[str, Any]) -> str:
@@ -181,19 +183,12 @@ class OntologyMixin(BaseEngine):
             "$schema": "http://json-schema.org/draft-07/schema#",
             "title": "DuckKB Knowledge Bundle Schema",
             "type": "array",
-            "items": {
-                "oneOf": one_of_schemas
-            }
+            "items": {"oneOf": one_of_schemas},
         }
 
-        return {
-            "full_bundle_schema": full_bundle_schema,
-            "example_yaml": "\n".join(example_items)
-        }
+        return {"full_bundle_schema": full_bundle_schema, "example_yaml": "\n".join(example_items)}
 
-    def _generate_node_schema(
-        self, node_name: str, node_def: NodeType
-    ) -> dict[str, Any]:
+    def _generate_node_schema(self, node_name: str, node_def: NodeType) -> dict[str, Any]:
         """生成节点类型的 JSON Schema。
 
         Args:
@@ -206,11 +201,7 @@ class OntologyMixin(BaseEngine):
         required = ["type"] + node_def.identity
         properties: dict[str, Any] = {
             "type": {"const": node_name},
-            "action": {
-                "type": "string",
-                "enum": ["upsert", "delete"],
-                "default": "upsert"
-            }
+            "action": {"type": "string", "enum": ["upsert", "delete"], "default": "upsert"},
         }
 
         if node_def.json_schema and "properties" in node_def.json_schema:
@@ -222,12 +213,10 @@ class OntologyMixin(BaseEngine):
             "type": "object",
             "required": required,
             "properties": properties,
-            "additionalProperties": False
+            "additionalProperties": False,
         }
 
-    def _generate_edge_schema(
-        self, edge_name: str, edge_def: EdgeType
-    ) -> dict[str, Any]:
+    def _generate_edge_schema(self, edge_name: str, edge_def: EdgeType) -> dict[str, Any]:
         """生成边类型的 JSON Schema。
 
         Args:
@@ -243,32 +232,22 @@ class OntologyMixin(BaseEngine):
         if source_node is None or target_node is None:
             return {}
 
-        source_props = {
-            f: {"type": "string"}
-            for f in source_node.identity
-        }
-        target_props = {
-            f: {"type": "string"}
-            for f in target_node.identity
-        }
+        source_props = {f: {"type": "string"} for f in source_node.identity}
+        target_props = {f: {"type": "string"} for f in target_node.identity}
 
         properties: dict[str, Any] = {
             "type": {"const": edge_name},
-            "action": {
-                "type": "string",
-                "enum": ["upsert", "delete"],
-                "default": "upsert"
-            },
+            "action": {"type": "string", "enum": ["upsert", "delete"], "default": "upsert"},
             "source": {
                 "type": "object",
                 "required": list(source_props.keys()),
-                "properties": source_props
+                "properties": source_props,
             },
             "target": {
                 "type": "object",
                 "required": list(target_props.keys()),
-                "properties": target_props
-            }
+                "properties": target_props,
+            },
         }
 
         if edge_def.json_schema and "properties" in edge_def.json_schema:
@@ -280,7 +259,7 @@ class OntologyMixin(BaseEngine):
             "type": "object",
             "required": ["type", "source", "target"],
             "properties": properties,
-            "additionalProperties": False
+            "additionalProperties": False,
         }
 
     def _prop_to_json_schema(self, prop_def: dict[str, Any]) -> dict[str, Any]:
@@ -344,14 +323,10 @@ class OntologyMixin(BaseEngine):
 
         lines = [f"- type: {edge_name}"]
 
-        source_fields = ", ".join(
-            f'{f}: "source-{f}"' for f in source_node.identity
-        )
+        source_fields = ", ".join(f'{f}: "source-{f}"' for f in source_node.identity)
         lines.append(f"  source: {{{source_fields}}}")
 
-        target_fields = ", ".join(
-            f'{f}: "target-{f}"' for f in target_node.identity
-        )
+        target_fields = ", ".join(f'{f}: "target-{f}"' for f in target_node.identity)
         lines.append(f"  target: {{{target_fields}}}")
 
         if edge_def.json_schema and "properties" in edge_def.json_schema:

@@ -80,9 +80,7 @@ class StorageMixin(BaseEngine):
                     f"SELECT * FROM read_json_auto('{path_pattern}', union_by_name=true)"
                 )
 
-                count_result = self.conn.execute(
-                    f"SELECT COUNT(*) FROM {staging_table}"
-                ).fetchone()
+                count_result = self.conn.execute(f"SELECT COUNT(*) FROM {staging_table}").fetchone()
                 record_count = count_result[0] if count_result else 0
 
                 if record_count == 0:
@@ -145,9 +143,7 @@ class StorageMixin(BaseEngine):
         await asyncio.to_thread(output_dir.mkdir, parents=True, exist_ok=True)
 
         def _execute_dump() -> int:
-            count_row = self.conn.execute(
-                f"SELECT COUNT(*) FROM {table_name}"
-            ).fetchone()
+            count_row = self.conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()
             record_count = count_row[0] if count_row else 0
 
             if record_count == 0:
@@ -155,9 +151,7 @@ class StorageMixin(BaseEngine):
                 return 0
 
             if partition_by_date:
-                self._dump_partitioned_by_date(
-                    table_name, output_dir, identity_field
-                )
+                self._dump_partitioned_by_date(table_name, output_dir, identity_field)
             else:
                 self._dump_single_file(table_name, output_dir, identity_field)
 

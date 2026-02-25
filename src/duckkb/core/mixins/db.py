@@ -1,6 +1,5 @@
 """数据库连接管理 Mixin。"""
 
-
 import duckdb
 
 from duckkb.core.base import BaseEngine

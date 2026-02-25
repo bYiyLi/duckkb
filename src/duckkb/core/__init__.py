@@ -36,6 +36,7 @@ from duckkb.core.mixins import (
     StorageMixin,
     TokenizerMixin,
 )
+from duckkb.core.models import EdgeType, NodeType, Ontology, VectorConfig
 
 __all__ = [
     "BaseEngine",
@@ -43,13 +44,17 @@ __all__ = [
     "ConfigMixin",
     "CoreConfig",
     "DBMixin",
+    "EdgeType",
     "EmbeddingMixin",
     "Engine",
     "GlobalConfig",
     "IndexMixin",
+    "NodeType",
+    "Ontology",
     "OntologyMixin",
     "SearchMixin",
     "StorageConfig",
     "StorageMixin",
     "TokenizerMixin",
+    "VectorConfig",
 ]

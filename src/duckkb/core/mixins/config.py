@@ -1,13 +1,16 @@
 """配置管理 Mixin。"""
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import yaml  # type: ignore[import-untyped]
 
-from duckkb.config import KBConfig
 from duckkb.constants import CONFIG_FILE_NAME
 from duckkb.core.base import BaseEngine
 from duckkb.core.config import CoreConfig, GlobalConfig, StorageConfig
+
+if TYPE_CHECKING:
+    from duckkb.config import KBConfig
 
 
 class ConfigMixin(BaseEngine):
@@ -21,9 +24,7 @@ class ConfigMixin(BaseEngine):
         config: 配置对象。
     """
 
-    def __init__(
-        self, *args, config_path: Path | str | None = None, **kwargs
-    ) -> None:
+    def __init__(self, *args, config_path: Path | str | None = None, **kwargs) -> None:
         """初始化配置 Mixin。
 
         Args:
@@ -49,7 +50,7 @@ class ConfigMixin(BaseEngine):
         return self._config
 
     @property
-    def kb_config(self) -> KBConfig:
+    def kb_config(self) -> "KBConfig":
         """知识库配置对象（懒加载）。"""
         if self._kb_config is None:
             self._kb_config = self._load_kb_config()
@@ -96,10 +97,12 @@ class ConfigMixin(BaseEngine):
             embedding_dim=kb_config.embedding.dim,
         )
 
-    def _load_kb_config(self) -> KBConfig:
+    def _load_kb_config(self) -> "KBConfig":
         """从文件加载知识库配置。
 
         Returns:
             知识库配置实例。
         """
+        from duckkb.config import KBConfig
+
         return KBConfig.from_yaml(self.kb_path)
