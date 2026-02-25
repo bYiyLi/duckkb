@@ -37,17 +37,35 @@ class StorageConfig(BaseModel):
         return v
 
 
+class GlobalConfig(BaseModel):
+    """全局配置模型。
+
+    定义全局配置项，从 config.yaml 的 global 节读取。
+
+    Attributes:
+        chunk_size: 文本切片长度，默认 800 字符。
+        embedding_model: 向量模型名称。
+        tokenizer: 分词器类型。
+    """
+
+    chunk_size: int = Field(default=800, ge=100, le=8000)
+    embedding_model: str = "text-embedding-3-small"
+    tokenizer: str = "jieba"
+
+
 class CoreConfig(BaseModel):
     """核心引擎配置模型。
 
-    定义核心引擎的完整配置，包含存储和嵌入向量配置。
+    定义核心引擎的完整配置，包含存储、嵌入向量和全局配置。
 
     Attributes:
         storage: 存储配置实例。
+        global_config: 全局配置实例。
         embedding_dim: 嵌入向量维度，默认为 1536。
     """
 
     storage: StorageConfig
+    global_config: GlobalConfig = Field(default_factory=GlobalConfig)
     embedding_dim: int = Field(default=1536, ge=1, le=4096)
 
     @field_validator("embedding_dim")

@@ -8,11 +8,14 @@ from duckkb.core.base import BaseEngine
 from duckkb.exceptions import DatabaseError
 from duckkb.logger import logger
 
+SEARCH_INDEX_TABLE = "_sys_search_index"
+
 
 class SearchMixin(BaseEngine):
     """检索能力 Mixin。
 
     提供 RRF 混合检索和纯向量/全文检索功能。
+    使用 search_index 表作为唯一检索入口。
 
     Attributes:
         rrf_k: RRF 平滑常数。
@@ -22,8 +25,7 @@ class SearchMixin(BaseEngine):
         """初始化检索 Mixin。
 
         Args:
-            rrf_k: RRF 常数，默认 60。较大的 k 值会使排名靠前的结果优势减弱，
-                   较小的 k 值会使排名靠前的结果优势增强。
+            rrf_k: RRF 常数，默认 60。
         """
         super().__init__(*args, **kwargs)
         self._rrf_k = rrf_k
@@ -35,107 +37,184 @@ class SearchMixin(BaseEngine):
 
     async def search(
         self,
-        node_type: str,
-        vector_column: str,
-        query_vector: list[float],
-        fts_columns: list[str],
-        query_text: str,
+        query: str,
+        *,
+        node_type: str | None = None,
         limit: int = 10,
+        alpha: float = 0.5,
     ) -> list[dict[str, Any]]:
-        """执行 RRF 混合检索。
+        """智能混合搜索。
 
-        使用 CTE 在数据库内完成：
-        1. 向量检索：基于向量距离排序
-        2. 全文检索：基于 BM25 排序
-        3. RRF 融合：合并两种检索结果的排名
+        通过 search_index 表执行混合检索，支持：
+        1. 向量检索：语义相似度
+        2. 全文检索：关键词匹配
+        3. RRF 融合：合并两种检索结果
 
         Args:
-            node_type: 节点类型名称。
-            vector_column: 向量字段名。
-            query_vector: 查询向量。
-            fts_columns: 全文检索字段列表。
-            query_text: 查询文本。
-            limit: 返回结果数量，默认 10。
+            query: 搜索查询文本。
+            node_type: 节点类型过滤器（可选）。
+            limit: 返回结果数量。
+            alpha: 向量搜索权重 (0.0-1.0)。
 
         Returns:
-            排序后的结果列表，每个元素包含原始字段和 rrf_score。
-
-        Raises:
-            ValueError: 节点类型不存在时抛出。
-            DatabaseError: 查询执行失败时抛出。
+            排序后的结果列表，包含原始字段和分数。
         """
-        node_def = self.ontology.nodes.get(node_type)
-        if node_def is None:
-            raise ValueError(f"Unknown node type: {node_type}")
-
-        table_name = node_def.table
-        validate_table_name(table_name)
-
-        if not query_vector:
-            logger.warning("Empty query vector provided")
+        if not query:
             return []
 
-        if not fts_columns:
-            logger.warning("No FTS columns specified, falling back to vector search only")
-            return await self.vector_search(node_type, vector_column, query_vector, limit)
+        query_vector = await self._get_query_vector(query)
+        if not query_vector:
+            logger.warning("Failed to generate query embedding")
+            return []
 
-        sql = self._build_rrf_query(
-            table_name, vector_column, query_vector, fts_columns, query_text, limit
+        return await self._execute_hybrid_search(
+            query=query,
+            query_vector=query_vector,
+            node_type=node_type,
+            limit=limit,
+            alpha=alpha,
         )
 
+    async def _get_query_vector(self, query: str) -> list[float] | None:
+        """获取查询向量。"""
+        if hasattr(self, "embed_single"):
+            try:
+                return await self.embed_single(query)
+            except Exception as e:
+                logger.error(f"Failed to embed query: {e}")
+        return None
+
+    async def _execute_hybrid_search(
+        self,
+        query: str,
+        query_vector: list[float],
+        node_type: str | None,
+        limit: int,
+        alpha: float,
+    ) -> list[dict[str, Any]]:
+        """执行混合检索。"""
+        table_filter = ""
+        params: list[Any] = []
+
+        if node_type:
+            node_def = self.ontology.nodes.get(node_type)
+            if node_def is None:
+                raise ValueError(f"Unknown node type: {node_type}")
+            table_filter = "AND source_table = ?"
+            params.append(node_def.table)
+
+        vector_dim = len(query_vector)
+        vector_literal = self._format_vector_literal(query_vector)
+        escaped_query = query.replace("'", "''")
+        prefetch_limit = limit * 3
+
+        sql = f"""
+        WITH
+        vector_search AS (
+            SELECT 
+                source_table,
+                source_id,
+                source_field,
+                chunk_seq,
+                array_cosine_similarity(vector, {vector_literal}::FLOAT[{vector_dim}]) as score,
+                rank() OVER (ORDER BY array_cosine_similarity(vector, {vector_literal}::FLOAT[{vector_dim}]) DESC) as rnk
+            FROM {SEARCH_INDEX_TABLE}
+            WHERE vector IS NOT NULL {table_filter}
+            ORDER BY score DESC
+            LIMIT {prefetch_limit}
+        ),
+        fts_search AS (
+            SELECT 
+                source_table,
+                source_id,
+                source_field,
+                chunk_seq,
+                fts_score as score,
+                rank() OVER (ORDER BY fts_score DESC) as rnk
+            FROM {SEARCH_INDEX_TABLE}
+            WHERE fts_content IS NOT NULL 
+              AND fts_match(fts_content, '{escaped_query}') {table_filter}
+            ORDER BY score DESC
+            LIMIT {prefetch_limit}
+        ),
+        rrf_scores AS (
+            SELECT 
+                COALESCE(v.source_table, f.source_table) as source_table,
+                COALESCE(v.source_id, f.source_id) as source_id,
+                COALESCE(v.source_field, f.source_field) as source_field,
+                COALESCE(v.chunk_seq, f.chunk_seq) as chunk_seq,
+                COALESCE(1.0 / ({self._rrf_k} + v.rnk), 0.0) * {alpha} 
+                + COALESCE(1.0 / ({self._rrf_k} + f.rnk), 0.0) * {1 - alpha} as rrf_score
+            FROM vector_search v
+            FULL OUTER JOIN fts_search f 
+              ON v.source_table = f.source_table 
+             AND v.source_id = f.source_id 
+             AND v.source_field = f.source_field
+             AND v.chunk_seq = f.chunk_seq
+        )
+        SELECT r.*, i.content
+        FROM rrf_scores r
+        JOIN {SEARCH_INDEX_TABLE} i 
+          ON r.source_table = i.source_table 
+         AND r.source_id = i.source_id 
+         AND r.source_field = i.source_field 
+         AND r.chunk_seq = i.chunk_seq
+        ORDER BY rrf_score DESC
+        LIMIT {limit}
+        """
+
         try:
-            rows = await asyncio.to_thread(self._execute_query, sql)
+            rows = await asyncio.to_thread(self._execute_query, sql, params)
             return self._process_results(rows)
         except Exception as e:
-            logger.error(f"RRF search failed: {e}")
-            raise DatabaseError(f"RRF search failed: {e}") from e
+            logger.error(f"Hybrid search failed: {e}")
+            raise DatabaseError(f"Hybrid search failed: {e}") from e
 
     async def vector_search(
         self,
-        node_type: str,
-        vector_column: str,
-        query_vector: list[float],
+        query: str,
+        *,
+        node_type: str | None = None,
         limit: int = 10,
     ) -> list[dict[str, Any]]:
-        """执行纯向量检索。
+        """纯向量检索。
 
         Args:
-            node_type: 节点类型名称。
-            vector_column: 向量字段名。
-            query_vector: 查询向量。
+            query: 搜索查询文本。
+            node_type: 节点类型过滤器。
             limit: 返回结果数量。
 
         Returns:
             排序后的结果列表。
-
-        Raises:
-            ValueError: 节点类型不存在时抛出。
-            DatabaseError: 查询执行失败时抛出。
         """
-        node_def = self.ontology.nodes.get(node_type)
-        if node_def is None:
-            raise ValueError(f"Unknown node type: {node_type}")
-
-        table_name = node_def.table
-        validate_table_name(table_name)
-
+        query_vector = await self._get_query_vector(query)
         if not query_vector:
-            logger.warning("Empty query vector provided")
             return []
+
+        table_filter = ""
+        params: list[Any] = []
+
+        if node_type:
+            node_def = self.ontology.nodes.get(node_type)
+            if node_def is None:
+                raise ValueError(f"Unknown node type: {node_type}")
+            table_filter = "AND source_table = ?"
+            params.append(node_def.table)
 
         vector_dim = len(query_vector)
         vector_literal = self._format_vector_literal(query_vector)
 
         sql = f"""
-        SELECT t.*, array_distance(t.{vector_column}, {vector_literal}::FLOAT[{vector_dim}]) as distance
-        FROM {table_name} t
-        WHERE t.{vector_column} IS NOT NULL
-        ORDER BY distance
+        SELECT source_table, source_id, source_field, chunk_seq, content,
+               array_cosine_similarity(vector, {vector_literal}::FLOAT[{vector_dim}]) as score
+        FROM {SEARCH_INDEX_TABLE}
+        WHERE vector IS NOT NULL {table_filter}
+        ORDER BY score DESC
         LIMIT {limit}
         """
 
         try:
-            rows = await asyncio.to_thread(self._execute_query, sql)
+            rows = await asyncio.to_thread(self._execute_query, sql, params)
             return self._process_results(rows)
         except Exception as e:
             logger.error(f"Vector search failed: {e}")
@@ -143,149 +222,96 @@ class SearchMixin(BaseEngine):
 
     async def fts_search(
         self,
-        node_type: str,
-        fts_columns: list[str],
-        query_text: str,
+        query: str,
+        *,
+        node_type: str | None = None,
         limit: int = 10,
     ) -> list[dict[str, Any]]:
-        """执行纯全文检索。
+        """纯全文检索。
 
         Args:
-            node_type: 节点类型名称。
-            fts_columns: 全文检索字段列表。
-            query_text: 查询文本。
+            query: 搜索查询文本。
+            node_type: 节点类型过滤器。
             limit: 返回结果数量。
 
         Returns:
             排序后的结果列表。
-
-        Raises:
-            ValueError: 节点类型不存在时抛出。
-            DatabaseError: 查询执行失败时抛出。
         """
-        node_def = self.ontology.nodes.get(node_type)
-        if node_def is None:
-            raise ValueError(f"Unknown node type: {node_type}")
+        if not query:
+            return []
 
-        table_name = node_def.table
-        validate_table_name(table_name)
+        table_filter = ""
+        params: list[Any] = []
 
-        if not fts_columns:
-            raise ValueError("fts_columns cannot be empty")
+        if node_type:
+            node_def = self.ontology.nodes.get(node_type)
+            if node_def is None:
+                raise ValueError(f"Unknown node type: {node_type}")
+            table_filter = "AND source_table = ?"
+            params.append(node_def.table)
 
-        fts_columns_str = ", ".join(fts_columns)
-        escaped_query = query_text.replace("'", "''")
+        escaped_query = query.replace("'", "''")
 
         sql = f"""
-        SELECT t.*, fts_score as score
-        FROM {table_name} t
-        WHERE fts_match(({fts_columns_str}), '{escaped_query}')
+        SELECT source_table, source_id, source_field, chunk_seq, content,
+               fts_score as score
+        FROM {SEARCH_INDEX_TABLE}
+        WHERE fts_content IS NOT NULL 
+          AND fts_match(fts_content, '{escaped_query}') {table_filter}
         ORDER BY score DESC
         LIMIT {limit}
         """
 
         try:
-            rows = await asyncio.to_thread(self._execute_query, sql)
+            rows = await asyncio.to_thread(self._execute_query, sql, params)
             return self._process_results(rows)
         except Exception as e:
             logger.error(f"FTS search failed: {e}")
             raise DatabaseError(f"FTS search failed: {e}") from e
 
-    def _build_rrf_query(
+    async def get_source_record(
         self,
-        table_name: str,
-        vector_column: str,
-        query_vector: list[float],
-        fts_columns: list[str],
-        query_text: str,
-        limit: int,
-    ) -> str:
-        """构建 RRF 混合检索 SQL 查询。
+        source_table: str,
+        source_id: int,
+    ) -> dict[str, Any] | None:
+        """根据搜索结果回捞原始业务记录。
 
         Args:
-            table_name: 表名。
-            vector_column: 向量字段名。
-            query_vector: 查询向量。
-            fts_columns: 全文检索字段列表。
-            query_text: 查询文本。
-            limit: 返回结果数量。
+            source_table: 源表名。
+            source_id: 源记录 ID。
 
         Returns:
-            SQL 查询字符串。
+            原始业务记录，不存在时返回 None。
         """
-        prefetch_limit = limit * 3
-        vector_dim = len(query_vector)
-        vector_literal = self._format_vector_literal(query_vector)
-        fts_columns_str = ", ".join(fts_columns)
-        escaped_query = query_text.replace("'", "''")
+        validate_table_name(source_table)
 
-        return f"""
-        WITH
-        vector_results AS (
-            SELECT
-                __id,
-                array_distance({vector_column}, {vector_literal}::FLOAT[{vector_dim}]) as score,
-                rank() OVER (ORDER BY array_distance({vector_column}, {vector_literal}::FLOAT[{vector_dim}])) as rnk
-            FROM {table_name}
-            WHERE {vector_column} IS NOT NULL
-            ORDER BY score
-            LIMIT {prefetch_limit}
-        ),
-        fts_results AS (
-            SELECT
-                __id,
-                fts_score as score,
-                rank() OVER (ORDER BY fts_score DESC) as rnk
-            FROM {table_name}
-            WHERE fts_match(({fts_columns_str}), '{escaped_query}')
-            LIMIT {prefetch_limit}
-        ),
-        rrf_scores AS (
-            SELECT
-                COALESCE(v.__id, f.__id) as __id,
-                COALESCE(1.0 / ({self._rrf_k} + v.rnk), 0.0) + COALESCE(1.0 / ({self._rrf_k} + f.rnk), 0.0) as rrf_score
-            FROM vector_results v
-            FULL OUTER JOIN fts_results f ON v.__id = f.__id
-        )
-        SELECT t.*, r.rrf_score
-        FROM rrf_scores r
-        JOIN {table_name} t ON r.__id = t.__id
-        ORDER BY rrf_score DESC
-        LIMIT {limit}
-        """
+        def _fetch() -> dict[str, Any] | None:
+            row = self.conn.execute(
+                f"SELECT * FROM {source_table} WHERE __id = ?",
+                [source_id],
+            ).fetchone()
+            if not row:
+                return None
+
+            cursor = self.conn.execute(f"SELECT * FROM {source_table} LIMIT 0")
+            columns = [desc[0] for desc in cursor.description] if cursor.description else []
+            return dict(zip(columns, row, strict=True))
+
+        return await asyncio.to_thread(_fetch)
 
     def _format_vector_literal(self, vector: list[float]) -> str:
-        """格式化向量为 SQL 字面量。
-
-        Args:
-            vector: 向量列表。
-
-        Returns:
-            SQL 向量字面量字符串。
-        """
+        """格式化向量为 SQL 字面量。"""
         values = ", ".join(str(v) for v in vector)
         return f"[{values}]"
 
-    def _execute_query(self, sql: str) -> list[Any]:
-        """执行 SQL 查询。
-
-        Args:
-            sql: SQL 查询字符串。
-
-        Returns:
-            查询返回的行列表。
-        """
+    def _execute_query(self, sql: str, params: list[Any] | None = None) -> list[Any]:
+        """执行 SQL 查询。"""
+        if params:
+            return self.conn.execute(sql, params).fetchall()
         return self.conn.execute(sql).fetchall()
 
     def _process_results(self, rows: list[Any]) -> list[dict[str, Any]]:
-        """处理原始数据库行为结构化结果。
-
-        Args:
-            rows: 数据库返回的原始行。
-
-        Returns:
-            包含处理结果的字典列表。
-        """
+        """处理原始数据库行为结构化结果。"""
         if not rows:
             return []
 

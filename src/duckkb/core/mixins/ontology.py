@@ -83,8 +83,9 @@ class OntologyMixin(BaseEngine):
 
         表结构：
         - __id BIGINT PRIMARY KEY (主键)
+        - __created_at TIMESTAMP (创建时间)
+        - __updated_at TIMESTAMP (更新时间)
         - __date DATE (分区日期字段，从 __updated_at 派生)
-        - __updated_at TIMESTAMP
         - 其他字段根据 json_schema 推断
 
         Args:
@@ -95,6 +96,7 @@ class OntologyMixin(BaseEngine):
         """
         columns = [
             "    __id BIGINT PRIMARY KEY",
+            "    __created_at TIMESTAMP",
             "    __updated_at TIMESTAMP",
             "    __date DATE GENERATED ALWAYS AS (CAST(__updated_at AS DATE)) STORED",
         ]
@@ -115,8 +117,9 @@ class OntologyMixin(BaseEngine):
         - __id BIGINT PRIMARY KEY
         - __from_id BIGINT (起始节点ID)
         - __to_id BIGINT (目标节点ID)
-        - __date DATE
-        - __updated_at TIMESTAMP
+        - __created_at TIMESTAMP (创建时间)
+        - __updated_at TIMESTAMP (更新时间)
+        - __date DATE (分区日期字段，从 __updated_at 派生)
         - 其他字段根据 json_schema 推断
 
         Args:
@@ -131,6 +134,7 @@ class OntologyMixin(BaseEngine):
             "    __id BIGINT PRIMARY KEY",
             "    __from_id BIGINT NOT NULL",
             "    __to_id BIGINT NOT NULL",
+            "    __created_at TIMESTAMP",
             "    __updated_at TIMESTAMP",
             "    __date DATE GENERATED ALWAYS AS (CAST(__updated_at AS DATE)) STORED",
         ]
