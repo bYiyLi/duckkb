@@ -77,7 +77,33 @@ class StorageMixin(BaseEngine):
                         [rowid],
                     )
 
-                conn.execute(f"INSERT OR REPLACE INTO {table_name} SELECT * FROM {staging_table}")
+                columns_result = conn.execute(
+                    f"SELECT column_name FROM information_schema.columns "
+                    f"WHERE table_name = '{table_name}' ORDER BY ordinal_position"
+                ).fetchall()
+                columns = [col[0] for col in columns_result]
+
+                identity_cols = ", ".join(unique_fields)
+                update_cols = [c for c in columns if c not in unique_fields and c != "__id"]
+                update_set = ", ".join(f"{c} = excluded.{c}" for c in update_cols)
+
+                cols_str = ", ".join(columns)
+                placeholders = ", ".join(["?" for _ in columns])
+
+                rows = conn.execute(f"SELECT {cols_str} FROM {staging_table}").fetchall()
+
+                if update_set:
+                    conn.executemany(
+                        f"INSERT INTO {table_name} ({cols_str}) VALUES ({placeholders}) "
+                        f"ON CONFLICT ({identity_cols}) DO UPDATE SET {update_set}",
+                        rows,
+                    )
+                else:
+                    conn.executemany(
+                        f"INSERT INTO {table_name} ({cols_str}) VALUES ({placeholders}) "
+                        f"ON CONFLICT ({identity_cols}) DO NOTHING",
+                        rows,
+                    )
 
                 conn.execute(f"DROP TABLE {staging_table}")
 
