@@ -111,6 +111,10 @@ class Engine(
         """
         self.sync_schema()
         self.create_index_tables()
+        logger.warning(
+            "initialize() does not load existing data. "
+            "Use async_initialize() for full initialization."
+        )
         return self
 
     async def async_initialize(self) -> Self:

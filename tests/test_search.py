@@ -34,7 +34,7 @@ class TestSearchHelpers:
 
     def test_execute_query(self, engine):
         """测试执行查询。"""
-        results = engine._execute_query("SELECT 1 as value")
+        results = engine.execute_read("SELECT 1 as value")
         assert len(results) == 1
         assert results[0][0] == 1
 

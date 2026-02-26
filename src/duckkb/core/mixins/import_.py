@@ -634,8 +634,7 @@ class ImportMixin(BaseEngine):
         validate_table_name(table_name)
 
         if not self._table_exists_in_conn(conn, table_name):
-            logger.warning(f"Edge table {table_name} does not exist, skipping upsert")
-            return 0
+            raise ValueError(f"Edge table {table_name} does not exist")
 
         source_node = self.ontology.nodes.get(edge_def.from_)
         target_node = self.ontology.nodes.get(edge_def.to)
@@ -866,42 +865,20 @@ class ImportMixin(BaseEngine):
     def _chunk_text_sync(self, text: str) -> list[str]:
         """将文本切分为多个片段（同步版本）。
 
-        使用滑动窗口策略，支持重叠切片以提高检索召回率。
-        复用 ChunkingMixin 的 chunk_text 方法。
+        委托给 ChunkingMixin.chunk_text 方法。
 
         Args:
             text: 待切分的文本。
 
         Returns:
             文本片段列表，空文本返回空列表。
+
+        Raises:
+            RuntimeError: ChunkingMixin 未被正确继承时抛出。
         """
-        if hasattr(self, "chunk_text"):
-            return self.chunk_text(text)
-
-        if not text:
-            return []
-
-        chunk_size = self.config.global_config.chunk_size
-        if len(text) <= chunk_size:
-            return [text]
-
-        chunk_overlap = getattr(self, "_chunk_overlap", 100)
-        chunks: list[str] = []
-        start = 0
-        step = chunk_size - chunk_overlap
-
-        while start < len(text):
-            end = start + chunk_size
-            chunk = text[start:end]
-
-            if len(chunk) < chunk_size // 2 and chunks:
-                chunks[-1] += chunk
-            else:
-                chunks.append(chunk)
-
-            start += step
-
-        return [c.strip() for c in chunks if c.strip()]
+        if not hasattr(self, "chunk_text"):
+            raise RuntimeError("ChunkingMixin not available, check Engine MRO")
+        return self.chunk_text(text)
 
     def _compute_hash_sync(self, text: str) -> str:
         """计算文本哈希（同步版本）。
@@ -949,7 +926,9 @@ class ImportMixin(BaseEngine):
 
         return fts_content
 
-    def _get_or_compute_vector_sync(self, conn: Any, text: str, content_hash: str) -> list[float] | None:
+    def _get_or_compute_vector_sync(
+        self, conn: Any, text: str, content_hash: str
+    ) -> list[float] | None:
         """获取或计算向量嵌入（同步版本）。
 
         优先从缓存获取，缓存未命中则返回 None（向量化需要异步 API）。
@@ -991,21 +970,22 @@ class ImportMixin(BaseEngine):
     async def _compute_vectors_async(
         self,
         upserted_ids: dict[str, list[int]],
-    ) -> dict[str, int]:
+    ) -> dict[str, dict[str, int]]:
         """异步计算向量嵌入。
 
         在事务提交后执行，为缓存未命中的内容计算向量。
+        使用批量 API 提高效率。
 
         Args:
             upserted_ids: 需要计算向量的记录 ID。
 
         Returns:
-            计算的向量数量统计。
+            计算结果统计，包含 success 和 failed 计数。
         """
-        if not hasattr(self, "embed_single"):
+        if not hasattr(self, "embed"):
             return {}
 
-        vector_result: dict[str, int] = {}
+        vector_result: dict[str, dict[str, int]] = {}
 
         for node_type, ids in upserted_ids.items():
             if not ids:
@@ -1035,8 +1015,8 @@ class ImportMixin(BaseEngine):
                 placeholders,
                 ids,
             )
-            count = 0
 
+            chunks_to_embed: list[tuple[str, str, int, str, int]] = []
             for record in records:
                 source_id = record[0]
                 field_values = record[1:]
@@ -1046,9 +1026,9 @@ class ImportMixin(BaseEngine):
                     if not content or not isinstance(content, str):
                         continue
 
-                    chunks = self._chunk_text_sync(content)
+                    text_chunks = self._chunk_text_sync(content)
 
-                    for chunk_seq, chunk in enumerate(chunks):
+                    for chunk_seq, chunk in enumerate(text_chunks):
                         content_hash = self._compute_hash_sync(chunk)
 
                         existing_vector = await asyncio.to_thread(
@@ -1058,10 +1038,33 @@ class ImportMixin(BaseEngine):
                         if existing_vector:
                             continue
 
-                        try:
-                            vector = await self.embed_single(chunk)
+                        chunks_to_embed.append(
+                            (content_hash, chunk, source_id, field_name, chunk_seq)
+                        )
 
-                            await asyncio.to_thread(
+            if not chunks_to_embed:
+                vector_result[node_type] = {"success": 0, "failed": 0}
+                continue
+
+            batch_size = 100
+            success_count = 0
+            failed_count = 0
+
+            for i in range(0, len(chunks_to_embed), batch_size):
+                batch = chunks_to_embed[i : i + batch_size]
+                hashes = [item[0] for item in batch]
+                texts = [item[1] for item in batch]
+                metas = [(item[2], item[3], item[4]) for item in batch]
+
+                try:
+                    vectors = await self.embed(texts)
+
+                    save_tasks = []
+                    for j, (content_hash, vector, (source_id, field_name, chunk_seq)) in enumerate(
+                        zip(hashes, vectors, metas)
+                    ):
+                        save_tasks.append(
+                            asyncio.to_thread(
                                 self._save_vector_to_cache,
                                 content_hash,
                                 vector,
@@ -1070,14 +1073,16 @@ class ImportMixin(BaseEngine):
                                 field_name,
                                 chunk_seq,
                             )
-                            count += 1
+                        )
 
-                        except Exception as e:
-                            logger.error(
-                                f"Failed to compute vector for {table_name}.{field_name}: {e}"
-                            )
+                    await asyncio.gather(*save_tasks)
+                    success_count += len(batch)
 
-            vector_result[node_type] = count
+                except Exception as e:
+                    logger.error(f"Failed to compute vectors batch for {table_name}: {e}")
+                    failed_count += len(batch)
+
+            vector_result[node_type] = {"success": success_count, "failed": failed_count}
 
         return vector_result
 

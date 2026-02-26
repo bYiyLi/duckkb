@@ -198,27 +198,20 @@ class IndexMixin(BaseEngine):
     def _chunk_text(self, text: str) -> list[str]:
         """将文本切分为多个片段。
 
-        使用滑动窗口策略，支持重叠切片以提高检索召回率。
-        复用 ChunkingMixin 的 chunk_text 方法。
+        委托给 ChunkingMixin.chunk_text 方法。
 
         Args:
             text: 待切分的文本。
 
         Returns:
             文本片段列表。
+
+        Raises:
+            RuntimeError: ChunkingMixin 未被正确继承时抛出。
         """
-        if hasattr(self, "chunk_text"):
-            return self.chunk_text(text)
-
-        if not text:
-            return []
-        if len(text) <= self.chunk_size:
-            return [text]
-
-        chunks = []
-        for i in range(0, len(text), self.chunk_size):
-            chunks.append(text[i : i + self.chunk_size])
-        return chunks
+        if not hasattr(self, "chunk_text"):
+            raise RuntimeError("ChunkingMixin not available, check Engine MRO")
+        return self.chunk_text(text)
 
     def _compute_hash(self, text: str) -> str:
         """计算文本哈希。"""

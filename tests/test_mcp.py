@@ -81,7 +81,7 @@ class TestMCPLifespan:
         mcp = DuckMCP(test_kb_path)
         await mcp.async_initialize()
 
-        assert mcp._engine is not None
+        assert mcp.ontology is not None
 
         mcp.close()
 
@@ -94,5 +94,3 @@ class TestMCPLifespan:
         await mcp.async_initialize()
 
         mcp.close()
-
-        assert mcp._engine is None

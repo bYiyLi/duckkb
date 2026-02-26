@@ -379,6 +379,8 @@ class GraphMixin(BaseEngine):
         LIMIT ?
         """
 
+        neighbor_node_type = self._get_node_type_by_table(node_table)
+
         def _execute() -> list[dict[str, Any]]:
             rows = self.execute_read(sql, [node_id, limit])
             if not rows:
@@ -401,6 +403,7 @@ class GraphMixin(BaseEngine):
                         "direction": direction,
                         "edge": {"__id": edge_id},
                         "node": neighbor_data,
+                        "node_type": neighbor_node_type,
                     }
                 )
 
@@ -506,11 +509,7 @@ class GraphMixin(BaseEngine):
             if neighbor_id is None or neighbor_id in visited:
                 continue
 
-            neighbor_type = self._get_node_type_by_table(neighbor.get("edge_type", ""))
-            if neighbor_type is None:
-                neighbor_type_name = neighbor.get("node_type", "Unknown")
-            else:
-                neighbor_type_name = neighbor_type
+            neighbor_type_name = neighbor.get("node_type", "Unknown")
 
             context.append(
                 {
@@ -731,9 +730,7 @@ class GraphMixin(BaseEngine):
                         }
                     )
 
-                    neighbor_type = self._get_node_type_by_table(
-                        neighbor.get("edge_type", "")
-                    ) or neighbor.get("node_type", node_type)
+                    neighbor_type = neighbor.get("node_type", node_type)
                     next_level.append((neighbor_type, neighbor_id))
 
             current_level = next_level
@@ -813,10 +810,7 @@ class GraphMixin(BaseEngine):
 
                     if neighbor_id is not None and neighbor_id not in visited_nodes:
                         visited_nodes[neighbor_id] = neighbor_node
-                        neighbor_type = (
-                            self._get_node_type_by_table(neighbor.get("edge_type", ""))
-                            or current_type
-                        )
+                        neighbor_type = neighbor.get("node_type", current_type)
                         node_types_map[neighbor_id] = neighbor_type
                         next_level.append((neighbor_type, neighbor_id))
 
@@ -956,9 +950,7 @@ class GraphMixin(BaseEngine):
                 if neighbor_id is None or neighbor_id in path_ids:
                     continue
 
-                neighbor_type = (
-                    self._get_node_type_by_table(neighbor.get("edge_type", "")) or current_type
-                )
+                neighbor_type = neighbor.get("node_type", current_type)
 
                 new_path = path + [
                     {"edge_type": neighbor.get("edge_type"), "edge": neighbor.get("edge", {})},

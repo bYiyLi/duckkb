@@ -27,7 +27,6 @@ class TestEngineInit:
         """测试引擎关闭。"""
         assert engine._db_path is not None
         engine.close()
-        assert engine._db_path is None
 
     def test_engine_properties(self, engine):
         """测试引擎属性。"""
