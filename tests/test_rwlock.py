@@ -477,11 +477,15 @@ class TestDBMixinIntegration:
         await asyncio.to_thread(async_engine.execute_write, "INSERT INTO test_async VALUES (1)")
 
         async def read_task() -> int:
-            result = await asyncio.to_thread(async_engine.execute_read, "SELECT COUNT(*) FROM test_async")
+            result = await asyncio.to_thread(
+                async_engine.execute_read, "SELECT COUNT(*) FROM test_async"
+            )
             return result[0][0]
 
         async def write_task(value: int) -> None:
-            await asyncio.to_thread(async_engine.execute_write, f"INSERT INTO test_async VALUES ({value})")
+            await asyncio.to_thread(
+                async_engine.execute_write, f"INSERT INTO test_async VALUES ({value})"
+            )
 
         write_coros = [write_task(i) for i in range(2, 7)]
         read_coros = [read_task() for _ in range(10)]

@@ -119,6 +119,9 @@ class ImportMixin(BaseEngine):
 
                 vector_result = await self._compute_vectors_async(upserted_ids)
 
+                if hasattr(self, "rebuild_fts_index"):
+                    await asyncio.to_thread(self.rebuild_fts_index)
+
                 dumped = await self._dump_to_shadow_dir(
                     upserted_ids,
                     deleted_ids,
@@ -1192,10 +1195,11 @@ class ImportMixin(BaseEngine):
 
         for node_type, node_def in self.ontology.nodes.items():
             output_dir = shadow_dir / "nodes" / node_def.table
-            count = await self._dump_table_to_dir(
-                node_def.table,
-                output_dir,
-                node_def.identity[0],
+            count = await self.dump_table(
+                table_name=node_def.table,
+                output_dir=output_dir,
+                identity_field=node_def.identity[0],
+                partition_by_date=self.config.storage.partition_by_date,
             )
             if count > 0:
                 dumped[node_type] = count
@@ -1203,10 +1207,11 @@ class ImportMixin(BaseEngine):
         for edge_name in self.ontology.edges.keys():
             table_name = f"edge_{edge_name}"
             output_dir = shadow_dir / "edges" / edge_name.lower()
-            count = await self._dump_table_to_dir(
-                table_name,
-                output_dir,
-                "__from_id",
+            count = await self.dump_table(
+                table_name=table_name,
+                output_dir=output_dir,
+                identity_field="__from_id",
+                partition_by_date=self.config.storage.partition_by_date,
             )
             if count > 0:
                 dumped[edge_name] = count
@@ -1216,48 +1221,6 @@ class ImportMixin(BaseEngine):
             dumped["_sys_search_cache"] = cache_count
 
         return dumped
-
-    async def _dump_table_to_dir(
-        self,
-        table_name: str,
-        output_dir: Path,
-        identity_field: str,
-    ) -> int:
-        """导出表数据到指定目录。
-
-        Args:
-            table_name: 表名。
-            output_dir: 输出目录。
-            identity_field: identity 字段名，用于排序。
-
-        Returns:
-            导出的记录数。
-        """
-        validate_table_name(table_name)
-        output_dir = output_dir.resolve()
-        await asyncio.to_thread(output_dir.mkdir, parents=True, exist_ok=True)
-
-        def _execute_dump() -> int:
-            rows = self.execute_read(f"SELECT COUNT(*) FROM {table_name}")
-            record_count = rows[0][0] if rows else 0
-
-            if record_count == 0:
-                return 0
-
-            temp_file = output_dir / "_temp.jsonl"
-            final_file = output_dir / "part_0.jsonl"
-
-            self.execute_write(
-                f"COPY ("
-                f"  SELECT * FROM {table_name} "
-                f"  ORDER BY {identity_field}"
-                f") TO '{temp_file}' (FORMAT JSONL)"
-            )
-
-            shutil.move(str(temp_file), str(final_file))
-            return record_count
-
-        return await asyncio.to_thread(_execute_dump)
 
     async def _dump_cache_to_parquet(self, shadow_dir: Path) -> int:
         """导出搜索缓存到 Parquet 文件。

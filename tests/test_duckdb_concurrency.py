@@ -9,9 +9,9 @@
 
 import asyncio
 import threading
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Generator
 
 import duckdb
 import pytest
@@ -327,7 +327,9 @@ class TestThreadSafeConnection:
 
         assert all(r >= 1 for r in read_results)
 
-        final_count = await asyncio.to_thread(lambda: conn.execute("SELECT COUNT(*) FROM test")[0][0])
+        final_count = await asyncio.to_thread(
+            lambda: conn.execute("SELECT COUNT(*) FROM test")[0][0]
+        )
         assert final_count == 11
 
         conn.close()

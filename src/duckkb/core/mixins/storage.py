@@ -99,9 +99,7 @@ class StorageMixin(BaseEngine):
                         [determined_id, rowid],
                     )
 
-                conn.execute(
-                    f"INSERT OR REPLACE INTO {table_name} SELECT * FROM {staging_table}"
-                )
+                conn.execute(f"INSERT OR REPLACE INTO {table_name} SELECT * FROM {staging_table}")
 
                 conn.execute(f"DROP TABLE {staging_table}")
 
@@ -166,7 +164,7 @@ class StorageMixin(BaseEngine):
         目录结构：{output_dir}/{YYYYMMDD}/part_0.jsonl
         """
         rows = self.execute_read(
-            f"SELECT DISTINCT strftime(__updated_at, '%Y%m%d') as date_part "
+            f"SELECT DISTINCT strftime(__created_at, '%Y%m%d') as date_part "
             f"FROM {table_name} ORDER BY date_part"
         )
 
@@ -180,7 +178,7 @@ class StorageMixin(BaseEngine):
             self.execute_write(
                 f"COPY ("
                 f"  SELECT * FROM {table_name} "
-                f"  WHERE strftime(__updated_at, '%Y%m%d') = '{date_part}' "
+                f"  WHERE strftime(__created_at, '%Y%m%d') = '{date_part}' "
                 f"  ORDER BY {identity_field}"
                 f") TO '{temp_file}' (FORMAT JSON)"
             )

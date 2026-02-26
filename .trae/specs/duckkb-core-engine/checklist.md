@@ -1,9 +1,0 @@
-- [x] 数据加载使用 `read_json_auto` 而非 Python 循环
-- [x] 数据导出使用 `COPY ... PARTITION_BY` 实现自动分片
-- [x] Node 和 Edge 表包含 `__id` 和分区字段
-- [x] RRF 检索完全在 SQL 中执行
-- [x] 核心引擎代码位于 `src/duckkb/core`
-- [x] 采用三层继承架构 (BaseEngine → Mixins → Engine)
-- [x] 每个 Mixin 只负责一件事
-- [x] ConfigMixin 负责配置读取
-- [x] DBMixin 负责 DuckDB 连接管理

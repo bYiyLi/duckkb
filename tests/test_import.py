@@ -1,11 +1,8 @@
 """导入测试。"""
 
 import hashlib
-import json
-from datetime import UTC, datetime
 
 import pytest
-import yaml
 
 
 class TestImportNodes:
@@ -50,9 +47,7 @@ class TestImportNodes:
 
         assert result["status"] == "success"
 
-        row = async_engine.execute_read(
-            "SELECT bio FROM characters WHERE name = ?", ["张明"]
-        )[0]
+        row = async_engine.execute_read("SELECT bio FROM characters WHERE name = ?", ["张明"])[0]
         assert row is not None
         assert row[0] == "更新后的简介"
 

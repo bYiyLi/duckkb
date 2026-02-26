@@ -64,8 +64,7 @@ class DBMixin(BaseEngine):
     def _ensure_fts_installed(self) -> None:
         """确保 FTS 扩展已安装。
 
-        通过临时写连接安装 FTS 扩展。
-        如果扩展已安装，此操作是幂等的（不会重复下载）。
+        FTS 是必需功能，安装失败直接抛出异常。
 
         Raises:
             DatabaseError: FTS 扩展安装失败时抛出。
@@ -73,10 +72,14 @@ class DBMixin(BaseEngine):
         conn = duckdb.connect(str(self.db_path), read_only=False)
         try:
             conn.execute("INSTALL fts")
-            logger.debug("FTS extension installed successfully")
+            conn.execute("LOAD fts")
+            logger.info("FTS extension installed and loaded successfully")
         except Exception as e:
-            logger.error(f"Failed to install FTS extension: {e}")
-            raise DatabaseError(f"Failed to install FTS extension: {e}") from e
+            error_msg = (
+                f"Failed to install FTS extension: {e}. FTS is required for DuckKB to function."
+            )
+            logger.error(error_msg)
+            raise DatabaseError(error_msg) from e
         finally:
             conn.close()
 
@@ -87,10 +90,7 @@ class DBMixin(BaseEngine):
             只读 DuckDB 连接实例。
         """
         conn = duckdb.connect(str(self.db_path), read_only=True)
-        try:
-            conn.execute("LOAD fts")
-        except Exception as e:
-            logger.debug(f"Failed to load FTS extension in read-only connection: {e}")
+        conn.execute("LOAD fts")
         return conn
 
     def _create_write_connection(self) -> duckdb.DuckDBPyConnection:
@@ -100,7 +100,6 @@ class DBMixin(BaseEngine):
             读写 DuckDB 连接实例。
         """
         conn = duckdb.connect(str(self.db_path), read_only=False)
-        conn.execute("INSTALL fts")
         conn.execute("LOAD fts")
         return conn
 

@@ -1,6 +1,5 @@
 """测试配置和共享 fixtures。"""
 
-import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 

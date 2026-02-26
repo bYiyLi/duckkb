@@ -34,6 +34,13 @@ class TestEngineInit:
         assert engine.config is not None
         assert engine.ontology is not None
 
+    def test_initialize_installs_fts(self, engine):
+        """测试初始化时安装 FTS 扩展。"""
+        result = engine.execute_read(
+            "SELECT extension_name FROM duckdb_extensions() WHERE extension_name = 'fts'"
+        )
+        assert len(result) > 0
+
     @pytest.mark.asyncio
     async def test_async_initialize(self, test_kb_path):
         """测试异步初始化。"""
@@ -43,6 +50,20 @@ class TestEngineInit:
         result = await engine.async_initialize()
 
         assert result is engine
+        engine.close()
+
+    @pytest.mark.asyncio
+    async def test_async_initialize_installs_fts(self, test_kb_path):
+        """测试异步初始化时安装 FTS 扩展。"""
+        from duckkb.core.engine import Engine
+
+        engine = Engine(test_kb_path)
+        await engine.async_initialize()
+
+        result = engine.execute_read(
+            "SELECT extension_name FROM duckdb_extensions() WHERE extension_name = 'fts'"
+        )
+        assert len(result) > 0
         engine.close()
 
 

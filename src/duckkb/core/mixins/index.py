@@ -11,6 +11,7 @@ from duckkb.logger import logger
 
 SEARCH_INDEX_TABLE = "_sys_search_index"
 SEARCH_CACHE_TABLE = "_sys_search_cache"
+FTS_INDEX_VIEW = "_sys_search_index_fts"
 
 
 class IndexMixin(BaseEngine):
@@ -64,6 +65,37 @@ class IndexMixin(BaseEngine):
             )
         """)
         logger.debug(f"Created table: {SEARCH_CACHE_TABLE}")
+
+    def _create_fts_index(self) -> None:
+        """为搜索索引表创建 FTS 索引。
+
+        创建 FTS 表和索引。如果索引已存在则跳过。
+        """
+        try:
+            self.execute_write("PRAGMA drop_fts_index('_sys_search_index_fts')")
+        except Exception:
+            pass
+
+        self.execute_write(f"DROP TABLE IF EXISTS {FTS_INDEX_VIEW}")
+
+        self.execute_write(f"""
+            CREATE TABLE {FTS_INDEX_VIEW} AS
+            SELECT 
+                source_table || '_' || source_id || '_' || source_field || '_' || chunk_seq as doc_id,
+                content
+            FROM {SEARCH_INDEX_TABLE}
+            WHERE content IS NOT NULL
+        """)
+
+        self.execute_write(f"PRAGMA create_fts_index('{FTS_INDEX_VIEW}', 'doc_id', 'content')")
+        logger.info("FTS index created successfully")
+
+    def rebuild_fts_index(self) -> None:
+        """重建 FTS 索引。
+
+        在数据导入后调用，确保 FTS 索引与数据同步。
+        """
+        self._create_fts_index()
 
     async def build_index(
         self,

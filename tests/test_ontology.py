@@ -64,9 +64,7 @@ class TestNodeType:
         node = NodeType(
             table="documents",
             identity=["doc_id"],
-            vectors={
-                "content_embedding": VectorConfig(dim=1536, model="text-embedding-3-small")
-            },
+            vectors={"content_embedding": VectorConfig(dim=1536, model="text-embedding-3-small")},
         )
         assert node.vectors is not None
         assert "content_embedding" in node.vectors

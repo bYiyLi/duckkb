@@ -13,6 +13,7 @@ from duckkb.exceptions import DatabaseError
 from duckkb.logger import logger
 
 SEARCH_INDEX_TABLE = "_sys_search_index"
+FTS_INDEX_VIEW = "_sys_search_index_fts"
 
 
 class SearchMixin(BaseEngine):
@@ -117,14 +118,14 @@ class SearchMixin(BaseEngine):
             node_def = self.ontology.nodes.get(node_type)
             if node_def is None:
                 raise ValueError(f"Unknown node type: {node_type}")
-            table_filter = "AND source_table = ?"
+            table_filter = "AND s.source_table = ?"
             params.append(node_def.table)
 
         vector_dim = len(query_vector)
         vector_literal = self._format_vector_for_sql(query_vector)
         prefetch_limit = limit * 3
 
-        fts_params = [query] + params
+        fts_params = [query, query, query] + params
 
         try:
             sql = f"""
@@ -138,21 +139,23 @@ class SearchMixin(BaseEngine):
                     array_cosine_similarity(vector::DOUBLE[{vector_dim}], {vector_literal}) as score,
                     rank() OVER (ORDER BY array_cosine_similarity(vector::DOUBLE[{vector_dim}], {vector_literal}) DESC) as rnk
                 FROM {SEARCH_INDEX_TABLE}
-                WHERE vector IS NOT NULL {table_filter}
+                WHERE vector IS NOT NULL {table_filter.replace("s.", "")}
                 ORDER BY score DESC
                 LIMIT {prefetch_limit}
             ),
             fts_search AS (
                 SELECT 
-                    source_table,
-                    source_id,
-                    source_field,
-                    chunk_seq,
-                    fts_score as score,
-                    rank() OVER (ORDER BY fts_score DESC) as rnk
-                FROM {SEARCH_INDEX_TABLE}
-                WHERE fts_content IS NOT NULL 
-                  AND fts_match(fts_content, ?) {table_filter}
+                    s.source_table,
+                    s.source_id,
+                    s.source_field,
+                    s.chunk_seq,
+                    fts_main_{FTS_INDEX_VIEW}.match_bm25(f.doc_id, ?) as score,
+                    rank() OVER (ORDER BY fts_main_{FTS_INDEX_VIEW}.match_bm25(f.doc_id, ?) DESC) as rnk
+                FROM {FTS_INDEX_VIEW} f
+                JOIN {SEARCH_INDEX_TABLE} s 
+                  ON f.doc_id = s.source_table || '_' || s.source_id || '_' || s.source_field || '_' || s.chunk_seq
+                WHERE fts_main_{FTS_INDEX_VIEW}.match_bm25(f.doc_id, ?) IS NOT NULL
+                {table_filter}
                 ORDER BY score DESC
                 LIMIT {prefetch_limit}
             ),
@@ -184,18 +187,6 @@ class SearchMixin(BaseEngine):
             rows = await asyncio.to_thread(self.execute_read, sql, fts_params)
             return self._process_results(rows)
         except Exception as e:
-            if "fts_match" in str(e):
-                logger.debug("FTS extension not available, falling back to vector search")
-                sql = f"""
-                SELECT source_table, source_id, source_field, chunk_seq, content,
-                       array_cosine_similarity(vector::DOUBLE[{vector_dim}], {vector_literal}) as score
-                FROM {SEARCH_INDEX_TABLE}
-                WHERE vector IS NOT NULL {table_filter}
-                ORDER BY score DESC
-                LIMIT {limit}
-                """
-                rows = await asyncio.to_thread(self.execute_read, sql, params)
-                return self._process_results(rows)
             logger.error(f"Hybrid search failed: {e}")
             raise DatabaseError(f"Hybrid search failed: {e}") from e
 
@@ -256,7 +247,7 @@ class SearchMixin(BaseEngine):
         node_type: str | None = None,
         limit: int = 10,
     ) -> list[dict[str, Any]]:
-        """纯全文检索。
+        """全文检索（使用 DuckDB FTS 扩展）。
 
         Args:
             query: 搜索查询文本。
@@ -265,29 +256,36 @@ class SearchMixin(BaseEngine):
 
         Returns:
             排序后的结果列表。
+
+        Raises:
+            DatabaseError: FTS 搜索失败时抛出。
         """
         if not query:
             return []
 
         table_filter = ""
-        params: list[Any] = [query]
+        params: list[Any] = [query, query]
 
         if node_type:
             node_def = self.ontology.nodes.get(node_type)
             if node_def is None:
                 raise ValueError(f"Unknown node type: {node_type}")
-            table_filter = "AND source_table = ?"
+            table_filter = "AND s.source_table = ?"
             params.append(node_def.table)
 
         sql = f"""
-        SELECT source_table, source_id, source_field, chunk_seq, content,
-               fts_score as score
-        FROM {SEARCH_INDEX_TABLE}
-        WHERE fts_content IS NOT NULL 
-          AND fts_match(fts_content, ?) {table_filter}
+        SELECT 
+            s.source_table, s.source_id, s.source_field, s.chunk_seq, s.content,
+            fts_main_{FTS_INDEX_VIEW}.match_bm25(f.doc_id, ?) as score
+        FROM {FTS_INDEX_VIEW} f
+        JOIN {SEARCH_INDEX_TABLE} s 
+          ON f.doc_id = s.source_table || '_' || s.source_id || '_' || s.source_field || '_' || s.chunk_seq
+        WHERE fts_main_{FTS_INDEX_VIEW}.match_bm25(f.doc_id, ?) IS NOT NULL
+        {table_filter}
         ORDER BY score DESC
-        LIMIT {limit}
+        LIMIT ?
         """
+        params.append(limit)
 
         try:
             rows = await asyncio.to_thread(self.execute_read, sql, params)
@@ -430,7 +428,9 @@ class SearchMixin(BaseEngine):
         Returns:
             列名列表。
         """
-        rows = self.execute_read(f"SELECT column_name FROM information_schema.columns WHERE table_name = '{table_name}' ORDER BY ordinal_position")
+        rows = self.execute_read(
+            f"SELECT column_name FROM information_schema.columns WHERE table_name = '{table_name}' ORDER BY ordinal_position"
+        )
         return [row[0] for row in rows]
 
     def _extract_columns_from_sql(self, sql: str) -> list[str]:
@@ -449,7 +449,7 @@ class SearchMixin(BaseEngine):
         if select_idx == -1 or from_idx == -1:
             return [f"col_{i}" for i in range(100)]
 
-        select_part = sql[select_idx + 6:from_idx].strip()
+        select_part = sql[select_idx + 6 : from_idx].strip()
 
         if select_part == "*":
             return [f"col_{i}" for i in range(100)]

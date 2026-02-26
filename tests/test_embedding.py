@@ -54,7 +54,7 @@ class TestEmbeddingWithMock:
     @pytest.mark.asyncio
     async def test_embed_batch_with_mock(self, async_engine):
         """测试批量向量嵌入（Mock）。"""
-        from unittest.mock import AsyncMock, patch
+        from unittest.mock import patch
 
         with patch("duckkb.core.mixins.embedding.EmbeddingMixin.embed") as mock_embed:
             mock_embed.return_value = [[0.1] * 1536, [0.2] * 1536, [0.3] * 1536]

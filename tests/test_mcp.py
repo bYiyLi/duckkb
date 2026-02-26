@@ -1,8 +1,5 @@
 """MCP 测试。"""
 
-import json
-from unittest.mock import patch
-
 import pytest
 
 

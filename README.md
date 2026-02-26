@@ -136,6 +136,26 @@ usage_instructions: "..."        # 传递给 AI Agent 的使用说明
   target: {name: Bob}    # 目标节点标识
 ```
 
+### 日期字段格式说明
+
+**重要：** YAML 中的日期字段必须使用字符串格式（加引号）。
+
+```yaml
+# 正确 ✅
+- type: knows
+  source: {name: Alice}
+  target: {name: Bob}
+  since: "2024-01-01"    # 使用引号包裹日期
+
+# 错误 ❌
+- type: knows
+  source: {name: Alice}
+  target: {name: Bob}
+  since: 2024-01-01      # 无引号，YAML 会解析为 date 对象
+```
+
+**原因：** YAML 解析器会将无引号的日期格式（如 `2024-01-01`）解析为 Python `date` 对象，而 JSON Schema 校验期望的是 `string` 类型。使用引号可以确保日期被解析为字符串。
+
 ### 导入流程
 
 1. 调用 `get_knowledge_schema` 获取校验规则
