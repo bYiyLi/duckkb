@@ -74,16 +74,14 @@ class StorageConfig(BaseModel):
 class GlobalConfig(BaseModel):
     """全局配置模型。
 
-    定义全局配置项，从 config.yaml 的 global 节读取。
+    定义全局配置项，从 config.yaml 读取。
 
     Attributes:
         chunk_size: 文本切片长度，默认 800 字符。
-        embedding_model: 向量模型名称。
         tokenizer: 分词器类型。
     """
 
     chunk_size: int = Field(default=800, ge=100, le=8000)
-    embedding_model: str = "text-embedding-3-small"
     tokenizer: str = "jieba"
 
 

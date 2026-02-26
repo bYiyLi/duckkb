@@ -4,6 +4,7 @@ import asyncio
 import re
 from typing import Any
 
+import numpy as np
 import orjson
 
 from duckkb.constants import QUERY_DEFAULT_LIMIT, QUERY_RESULT_SIZE_LIMIT, validate_table_name
@@ -120,70 +121,81 @@ class SearchMixin(BaseEngine):
             params.append(node_def.table)
 
         vector_dim = len(query_vector)
-        vector_literal = self._format_vector_literal(query_vector)
+        vector_literal = self._format_vector_for_sql(query_vector)
         prefetch_limit = limit * 3
-
-        sql = f"""
-        WITH
-        vector_search AS (
-            SELECT 
-                source_table,
-                source_id,
-                source_field,
-                chunk_seq,
-                array_cosine_similarity(vector, {vector_literal}::FLOAT[{vector_dim}]) as score,
-                rank() OVER (ORDER BY array_cosine_similarity(vector, {vector_literal}::FLOAT[{vector_dim}]) DESC) as rnk
-            FROM {SEARCH_INDEX_TABLE}
-            WHERE vector IS NOT NULL {table_filter}
-            ORDER BY score DESC
-            LIMIT {prefetch_limit}
-        ),
-        fts_search AS (
-            SELECT 
-                source_table,
-                source_id,
-                source_field,
-                chunk_seq,
-                fts_score as score,
-                rank() OVER (ORDER BY fts_score DESC) as rnk
-            FROM {SEARCH_INDEX_TABLE}
-            WHERE fts_content IS NOT NULL 
-              AND fts_match(fts_content, ?) {table_filter}
-            ORDER BY score DESC
-            LIMIT {prefetch_limit}
-        ),
-        rrf_scores AS (
-            SELECT 
-                COALESCE(v.source_table, f.source_table) as source_table,
-                COALESCE(v.source_id, f.source_id) as source_id,
-                COALESCE(v.source_field, f.source_field) as source_field,
-                COALESCE(v.chunk_seq, f.chunk_seq) as chunk_seq,
-                COALESCE(1.0 / ({self._rrf_k} + v.rnk), 0.0) * {alpha} 
-                + COALESCE(1.0 / ({self._rrf_k} + f.rnk), 0.0) * {1 - alpha} as rrf_score
-            FROM vector_search v
-            FULL OUTER JOIN fts_search f 
-              ON v.source_table = f.source_table 
-             AND v.source_id = f.source_id 
-             AND v.source_field = f.source_field
-             AND v.chunk_seq = f.chunk_seq
-        )
-        SELECT r.*, i.content
-        FROM rrf_scores r
-        JOIN {SEARCH_INDEX_TABLE} i 
-          ON r.source_table = i.source_table 
-         AND r.source_id = i.source_id 
-         AND r.source_field = i.source_field 
-         AND r.chunk_seq = i.chunk_seq
-        ORDER BY rrf_score DESC
-        LIMIT {limit}
-        """
 
         fts_params = [query] + params
 
         try:
+            sql = f"""
+            WITH
+            vector_search AS (
+                SELECT 
+                    source_table,
+                    source_id,
+                    source_field,
+                    chunk_seq,
+                    array_cosine_similarity(vector::DOUBLE[{vector_dim}], {vector_literal}) as score,
+                    rank() OVER (ORDER BY array_cosine_similarity(vector::DOUBLE[{vector_dim}], {vector_literal}) DESC) as rnk
+                FROM {SEARCH_INDEX_TABLE}
+                WHERE vector IS NOT NULL {table_filter}
+                ORDER BY score DESC
+                LIMIT {prefetch_limit}
+            ),
+            fts_search AS (
+                SELECT 
+                    source_table,
+                    source_id,
+                    source_field,
+                    chunk_seq,
+                    fts_score as score,
+                    rank() OVER (ORDER BY fts_score DESC) as rnk
+                FROM {SEARCH_INDEX_TABLE}
+                WHERE fts_content IS NOT NULL 
+                  AND fts_match(fts_content, ?) {table_filter}
+                ORDER BY score DESC
+                LIMIT {prefetch_limit}
+            ),
+            rrf_scores AS (
+                SELECT 
+                    COALESCE(v.source_table, f.source_table) as source_table,
+                    COALESCE(v.source_id, f.source_id) as source_id,
+                    COALESCE(v.source_field, f.source_field) as source_field,
+                    COALESCE(v.chunk_seq, f.chunk_seq) as chunk_seq,
+                    COALESCE(1.0 / ({self._rrf_k} + v.rnk), 0.0) * {alpha} 
+                    + COALESCE(1.0 / ({self._rrf_k} + f.rnk), 0.0) * {1 - alpha} as rrf_score
+                FROM vector_search v
+                FULL OUTER JOIN fts_search f 
+                  ON v.source_table = f.source_table 
+                 AND v.source_id = f.source_id 
+                 AND v.source_field = f.source_field
+                 AND v.chunk_seq = f.chunk_seq
+            )
+            SELECT r.*, i.content
+            FROM rrf_scores r
+            JOIN {SEARCH_INDEX_TABLE} i 
+              ON r.source_table = i.source_table 
+             AND r.source_id = i.source_id 
+             AND r.source_field = i.source_field 
+             AND r.chunk_seq = i.chunk_seq
+            ORDER BY rrf_score DESC
+            LIMIT {limit}
+            """
             rows = await asyncio.to_thread(self.execute_read, sql, fts_params)
             return self._process_results(rows)
         except Exception as e:
+            if "fts_match" in str(e):
+                logger.debug("FTS extension not available, falling back to vector search")
+                sql = f"""
+                SELECT source_table, source_id, source_field, chunk_seq, content,
+                       array_cosine_similarity(vector::DOUBLE[{vector_dim}], {vector_literal}) as score
+                FROM {SEARCH_INDEX_TABLE}
+                WHERE vector IS NOT NULL {table_filter}
+                ORDER BY score DESC
+                LIMIT {limit}
+                """
+                rows = await asyncio.to_thread(self.execute_read, sql, params)
+                return self._process_results(rows)
             logger.error(f"Hybrid search failed: {e}")
             raise DatabaseError(f"Hybrid search failed: {e}") from e
 
@@ -219,11 +231,11 @@ class SearchMixin(BaseEngine):
             params.append(node_def.table)
 
         vector_dim = len(query_vector)
-        vector_literal = self._format_vector_literal(query_vector)
+        vector_literal = self._format_vector_for_sql(query_vector)
 
         sql = f"""
         SELECT source_table, source_id, source_field, chunk_seq, content,
-               array_cosine_similarity(vector, {vector_literal}::FLOAT[{vector_dim}]) as score
+               array_cosine_similarity(vector::DOUBLE[{vector_dim}], {vector_literal}) as score
         FROM {SEARCH_INDEX_TABLE}
         WHERE vector IS NOT NULL {table_filter}
         ORDER BY score DESC
@@ -365,6 +377,30 @@ class SearchMixin(BaseEngine):
         """格式化向量为 SQL 字面量。"""
         values = ", ".join(str(v) for v in vector)
         return f"[{values}]"
+
+    def _to_float32_array(self, vector: list[float]) -> list[float]:
+        """确保向量为 float32 格式。
+
+        Args:
+            vector: 浮点数列表。
+
+        Returns:
+            float32 值列表。
+        """
+        return [float(np.float32(v)) for v in vector]
+
+    def _format_vector_for_sql(self, vector: list[float]) -> str:
+        """格式化向量为 SQL 字面量，使用固定大小 DOUBLE 数组。
+
+        Args:
+            vector: 浮点数列表。
+
+        Returns:
+            SQL DOUBLE 数组字面量字符串。
+        """
+        dim = len(vector)
+        values = ", ".join(str(float(np.float32(v))) for v in vector)
+        return f"[{values}]::DOUBLE[{dim}]"
 
     def _process_results(self, rows: list[Any]) -> list[dict[str, Any]]:
         """处理原始数据库行为结构化结果。"""

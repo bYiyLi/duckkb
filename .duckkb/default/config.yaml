@@ -1,13 +1,12 @@
 embedding:
-  model: text-embedding-3-small
-  dim: 1536
+  model: Qwen/Qwen3-Embedding-8B
+  dim: 4096
+  api_key: "ms-c8ec43de-5f55-4edf-a033-cb5ef4e76802"
+  base_url: "https://api-inference.modelscope.cn/v1"
 
+chunk_size: 800
+tokenizer: jieba
 log_level: INFO
-
-global:
-  chunk_size: 800
-  embedding_model: text-embedding-3-small
-  tokenizer: jieba
 
 ontology:
   nodes:
@@ -131,7 +130,7 @@ ontology:
 
 usage_instructions: |
   这是一个测试知识库，用于验证 DuckKB 的所有核心功能。
-  
+
   支持的操作：
   - 节点 CRUD：Character, Document, Product
   - 边 CRUD：knows, authored, mentions

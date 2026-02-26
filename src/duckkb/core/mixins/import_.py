@@ -1308,3 +1308,88 @@ class ImportMixin(BaseEngine):
                 logger.warning(f"Failed to cleanup backup directory: {e}")
 
         await asyncio.to_thread(_replace)
+
+    async def _rebuild_index_from_cache(self) -> None:
+        """从缓存重建搜索索引。
+
+        扫描所有节点数据，使用缓存中的向量和分词结果重建索引。
+        """
+        for node_type, node_def in self.ontology.nodes.items():
+            search_config = getattr(node_def, "search", None)
+            if not search_config:
+                continue
+
+            fts_fields: list[str] = getattr(search_config, "full_text", []) or []
+            vector_fields: list[str] = getattr(search_config, "vectors", []) or []
+            all_fields: set[str] = set(fts_fields) | set(vector_fields)
+
+            if not all_fields:
+                continue
+
+            table_name = node_def.table
+            validate_table_name(table_name)
+            fields_str = ", ".join(all_fields)
+
+            def _fetch_records() -> list[tuple]:
+                return self.execute_read(f"SELECT __id, {fields_str} FROM {table_name}")
+
+            records = await asyncio.to_thread(_fetch_records)
+            if not records:
+                continue
+
+            entries = []
+            for record in records:
+                source_id = record[0]
+                field_values = record[1:]
+                field_list = list(all_fields)
+
+                for field_idx, field_name in enumerate(field_list):
+                    content = field_values[field_idx]
+                    if not content or not isinstance(content, str):
+                        continue
+
+                    chunks = self._chunk_text_sync(content)
+
+                    for chunk_seq, chunk in enumerate(chunks):
+                        content_hash = self._compute_hash_sync(chunk)
+
+                        fts_content = None
+                        vector = None
+
+                        if field_name in fts_fields or field_name in vector_fields:
+                            row = self.execute_read(
+                                f"SELECT fts_content, vector FROM {SEARCH_CACHE_TABLE} WHERE content_hash = ?",
+                                [content_hash],
+                            )
+                            if row:
+                                fts_content = row[0][0] if field_name in fts_fields else None
+                                vector = row[0][1] if field_name in vector_fields else None
+
+                        entries.append(
+                            (
+                                table_name,
+                                source_id,
+                                field_name,
+                                chunk_seq,
+                                chunk,
+                                fts_content,
+                                vector,
+                                content_hash,
+                                datetime.now(UTC),
+                            )
+                        )
+
+            if entries:
+
+                def _insert() -> None:
+                    with self.write_transaction() as conn:
+                        conn.executemany(
+                            f"INSERT OR REPLACE INTO {SEARCH_INDEX_TABLE} "
+                            "(source_table, source_id, source_field, chunk_seq, content, "
+                            "fts_content, vector, content_hash, created_at) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            entries,
+                        )
+
+                await asyncio.to_thread(_insert)
+                logger.info(f"Rebuilt index for {node_type}: {len(entries)} entries")

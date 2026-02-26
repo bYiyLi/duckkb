@@ -60,9 +60,8 @@ class ConfigMixin(BaseEngine):
         """从文件加载核心配置。
 
         从 config.yaml 读取：
-        - global.chunk_size
-        - global.embedding_model
-        - global.tokenizer
+        - chunk_size
+        - tokenizer
         - storage.data_dir
 
         Returns:
@@ -70,19 +69,14 @@ class ConfigMixin(BaseEngine):
         """
         kb_config = self.kb_config
         data_dir = self.kb_path / "data"
-        global_config = GlobalConfig()
+        global_config = GlobalConfig(
+            chunk_size=kb_config.chunk_size,
+            tokenizer=kb_config.tokenizer,
+        )
 
         if self.config_path.exists():
             with open(self.config_path, encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
-
-            global_data = data.get("global", {})
-            if global_data:
-                global_config = GlobalConfig(
-                    chunk_size=global_data.get("chunk_size", 800),
-                    embedding_model=global_data.get("embedding_model", "text-embedding-3-small"),
-                    tokenizer=global_data.get("tokenizer", "jieba"),
-                )
 
             storage_config = data.get("storage", {})
             if storage_config and "data_dir" in storage_config:

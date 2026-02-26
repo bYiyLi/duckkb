@@ -1,12 +1,12 @@
 import pytest
 
 from duckkb.config import (
-    EMBEDDING_MODEL_DIMS,
     AppContext,
     EmbeddingConfig,
     GlobalConfig,
     KBConfig,
 )
+from duckkb.constants import EMBEDDING_MODEL_DIMS
 from duckkb.core.models.ontology import Ontology
 
 
@@ -15,6 +15,10 @@ def test_default_kb_config():
     assert config.log_level == "INFO"
     assert config.embedding.model == "text-embedding-3-small"
     assert config.embedding.dim == 1536
+    assert config.embedding.api_key is None
+    assert config.embedding.base_url is None
+    assert config.chunk_size == 800
+    assert config.tokenizer == "jieba"
     assert config.EMBEDDING_MODEL == "text-embedding-3-small"
     assert config.EMBEDDING_DIM == 1536
     assert config.LOG_LEVEL == "INFO"
@@ -25,6 +29,10 @@ def test_kb_config_from_yaml(tmp_path):
 embedding:
   model: text-embedding-3-large
   dim: 3072
+  api_key: test-api-key
+  base_url: https://api.example.com
+chunk_size: 1000
+tokenizer: jieba
 log_level: DEBUG
 """
     config_file = tmp_path / "config.yaml"
@@ -33,6 +41,10 @@ log_level: DEBUG
     config = KBConfig.from_yaml(tmp_path)
     assert config.embedding.model == "text-embedding-3-large"
     assert config.embedding.dim == 3072
+    assert config.embedding.api_key == "test-api-key"
+    assert config.embedding.base_url == "https://api.example.com"
+    assert config.chunk_size == 1000
+    assert config.tokenizer == "jieba"
     assert config.log_level == "DEBUG"
     assert config.EMBEDDING_MODEL == "text-embedding-3-large"
     assert config.EMBEDDING_DIM == 3072
@@ -88,6 +100,24 @@ def test_app_context(tmp_path):
     AppContext.reset()
 
 
+def test_app_context_with_openai_config(tmp_path):
+    config_content = """
+embedding:
+  model: text-embedding-3-small
+  dim: 1536
+  api_key: test-api-key
+  base_url: https://api.example.com
+"""
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(config_content)
+
+    AppContext.reset()
+    ctx = AppContext.init(tmp_path)
+    assert ctx.global_config.OPENAI_API_KEY == "test-api-key"
+    assert ctx.global_config.OPENAI_BASE_URL == "https://api.example.com"
+    AppContext.reset()
+
+
 def test_app_context_get():
     AppContext.reset()
     with pytest.raises(RuntimeError, match="not initialized"):
@@ -100,13 +130,19 @@ def test_embedding_model_dims_mapping():
 
 
 def test_embedding_config_validation_invalid_dim():
-    with pytest.raises(ValueError, match="dim"):
-        EmbeddingConfig(dim=512)
+    with pytest.raises(ValueError, match="dim must be positive"):
+        EmbeddingConfig(dim=-1)
 
 
 def test_embedding_config_validation_invalid_model():
-    with pytest.raises(ValueError, match="model"):
-        EmbeddingConfig(model="invalid-model")
+    with pytest.raises(ValueError, match="model name cannot be empty"):
+        EmbeddingConfig(model="")
+
+
+def test_embedding_config_custom_model_and_dim():
+    config = EmbeddingConfig(model="custom-model", dim=4096)
+    assert config.model == "custom-model"
+    assert config.dim == 4096
 
 
 def test_kb_config_validation_invalid_log_level():

@@ -18,7 +18,7 @@ class EmbeddingMixin(BaseEngine):
     """嵌入向量管理 Mixin。
 
     提供文本向量嵌入的获取与缓存功能，支持批量查询和自动缓存。
-    embedding_model 从 config.yaml 的 global.embedding_model 读取。
+    embedding_model 从 config.yaml 的 embedding.model 读取。
 
     Attributes:
         embedding_model: 嵌入模型名称。
@@ -32,8 +32,8 @@ class EmbeddingMixin(BaseEngine):
 
     @property
     def embedding_model(self) -> str:
-        """嵌入模型名称，从全局配置读取。"""
-        return self.config.global_config.embedding_model
+        """嵌入模型名称，从 embedding 配置读取。"""
+        return self.kb_config.embedding.model
 
     @property
     def embedding_dim(self) -> int:
@@ -75,9 +75,7 @@ class EmbeddingMixin(BaseEngine):
 
         hashes = [self.compute_hash(t) for t in texts]
 
-        cached_map = await asyncio.to_thread(
-            self._get_cached_embeddings_batch, hashes
-        )
+        cached_map = await asyncio.to_thread(self._get_cached_embeddings_batch, hashes)
 
         results: list[list[float] | None] = [None] * len(texts)
         missing_indices: list[int] = []
@@ -95,9 +93,7 @@ class EmbeddingMixin(BaseEngine):
             new_embeddings = await self._call_embedding_api(missing_texts)
 
             missing_hashes = [hashes[i] for i in missing_indices]
-            await asyncio.to_thread(
-                self._cache_embeddings_batch, missing_hashes, new_embeddings
-            )
+            await asyncio.to_thread(self._cache_embeddings_batch, missing_hashes, new_embeddings)
 
             for idx, embedding in zip(missing_indices, new_embeddings, strict=True):
                 results[idx] = embedding
@@ -127,9 +123,7 @@ class EmbeddingMixin(BaseEngine):
         """
         return hashlib.md5(text.encode("utf-8")).hexdigest()
 
-    def _get_cached_embeddings_batch(
-        self, hashes: list[str]
-    ) -> dict[str, list[float]]:
+    def _get_cached_embeddings_batch(self, hashes: list[str]) -> dict[str, list[float]]:
         """批量查询缓存中的向量嵌入。
 
         Args:
@@ -160,9 +154,7 @@ class EmbeddingMixin(BaseEngine):
             logger.warning(f"Cache lookup failed: {e}")
             return {}
 
-    def _cache_embeddings_batch(
-        self, hashes: list[str], embeddings: list[list[float]]
-    ) -> None:
+    def _cache_embeddings_batch(self, hashes: list[str], embeddings: list[list[float]]) -> None:
         """批量存储向量嵌入到缓存。
 
         Args:

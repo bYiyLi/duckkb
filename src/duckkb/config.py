@@ -17,11 +17,11 @@ from pydantic import BaseModel, Field, field_validator
 
 from duckkb.constants import (
     CONFIG_FILE_NAME,
+    DEFAULT_CHUNK_SIZE,
     DEFAULT_EMBEDDING_DIM,
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_LOG_LEVEL,
-    EMBEDDING_MODEL_DIMS,
-    VALID_EMBEDDING_DIMS,
+    DEFAULT_TOKENIZER,
     VALID_LOG_LEVELS,
 )
 from duckkb.core.models.ontology import Ontology
@@ -49,10 +49,14 @@ class EmbeddingConfig(BaseModel):
     Attributes:
         model: 嵌入模型名称，默认为 text-embedding-3-small。
         dim: 嵌入向量维度，必须为 1536 或 3072。
+        api_key: OpenAI API 密钥。
+        base_url: OpenAI API 基础 URL，用于自定义端点。
     """
 
     model: str = DEFAULT_EMBEDDING_MODEL
     dim: int = DEFAULT_EMBEDDING_DIM
+    api_key: str | None = None
+    base_url: str | None = None
 
     @field_validator("dim")
     @classmethod
@@ -70,8 +74,6 @@ class EmbeddingConfig(BaseModel):
         """
         if v <= 0:
             raise ValueError("dim must be positive")
-        if v not in VALID_EMBEDDING_DIMS:
-            raise ValueError(f"dim must be one of {list(VALID_EMBEDDING_DIMS)} for OpenAI models")
         return v
 
     @field_validator("model")
@@ -88,8 +90,8 @@ class EmbeddingConfig(BaseModel):
         Raises:
             ValueError: 模型名称无效时抛出。
         """
-        if v not in EMBEDDING_MODEL_DIMS:
-            raise ValueError(f"model must be one of: {list(EMBEDDING_MODEL_DIMS.keys())}")
+        if not v or not v.strip():
+            raise ValueError("model name cannot be empty")
         return v
 
 
@@ -100,11 +102,15 @@ class KBConfig(BaseModel):
 
     Attributes:
         embedding: 嵌入模型配置。
+        chunk_size: 文本切片长度，默认 800 字符。
+        tokenizer: 分词器类型，默认 jieba。
         log_level: 日志级别，默认为 INFO。
         ontology: 本体定义。
     """
 
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
+    chunk_size: int = Field(default=DEFAULT_CHUNK_SIZE, ge=100, le=8000)
+    tokenizer: str = DEFAULT_TOKENIZER
     log_level: str = DEFAULT_LOG_LEVEL
     ontology: Ontology = Field(default_factory=Ontology)
     usage_instructions: str | None = None
@@ -148,7 +154,11 @@ class KBConfig(BaseModel):
                 embedding=EmbeddingConfig(
                     model=embedding_config.get("model", DEFAULT_EMBEDDING_MODEL),
                     dim=embedding_config.get("dim", DEFAULT_EMBEDDING_DIM),
+                    api_key=embedding_config.get("api_key"),
+                    base_url=embedding_config.get("base_url"),
                 ),
+                chunk_size=data.get("chunk_size", DEFAULT_CHUNK_SIZE),
+                tokenizer=data.get("tokenizer", DEFAULT_TOKENIZER),
                 log_level=data.get("log_level", DEFAULT_LOG_LEVEL),
                 ontology=Ontology(**ontology_config) if ontology_config else Ontology(),
                 usage_instructions=data.get("usage_instructions"),
@@ -194,7 +204,10 @@ class AppContext:
         """
         self.kb_path = kb_path.resolve()
         self.kb_config = KBConfig.from_yaml(kb_path)
-        self.global_config = GlobalConfig()
+        self.global_config = GlobalConfig(
+            OPENAI_API_KEY=self.kb_config.embedding.api_key,
+            OPENAI_BASE_URL=self.kb_config.embedding.base_url,
+        )
         self._openai_client: AsyncOpenAI | None = None
         self._jieba_initialized = False
 

@@ -109,6 +109,7 @@ class Engine(
         Returns:
             初始化后的引擎实例，支持链式调用。
         """
+        self._ensure_fts_installed()
         self.sync_schema()
         self.create_index_tables()
         logger.warning(
@@ -125,6 +126,7 @@ class Engine(
         Returns:
             初始化后的引擎实例，支持链式调用。
         """
+        self._ensure_fts_installed()
         self.sync_schema()
         self.create_index_tables()
         await self._load_existing_data()
@@ -178,6 +180,8 @@ class Engine(
 
         if loaded_nodes > 0 or loaded_edges > 0:
             logger.info(f"Loaded existing data: {loaded_nodes} nodes, {loaded_edges} edges")
+
+        await self._rebuild_index_from_cache()
 
     def close(self) -> None:
         """关闭引擎。

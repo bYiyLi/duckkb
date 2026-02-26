@@ -4,13 +4,14 @@ import atexit
 import shutil
 import tempfile
 import uuid
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Generator
 
 import duckdb
 
 from duckkb.core.base import BaseEngine
+from duckkb.exceptions import DatabaseError
 from duckkb.logger import logger
 from duckkb.utils.rwlock import FairReadWriteLock
 
@@ -60,13 +61,37 @@ class DBMixin(BaseEngine):
         logger.debug(f"Temp database path created: {db_path}")
         return db_path
 
+    def _ensure_fts_installed(self) -> None:
+        """确保 FTS 扩展已安装。
+
+        通过临时写连接安装 FTS 扩展。
+        如果扩展已安装，此操作是幂等的（不会重复下载）。
+
+        Raises:
+            DatabaseError: FTS 扩展安装失败时抛出。
+        """
+        conn = duckdb.connect(str(self.db_path), read_only=False)
+        try:
+            conn.execute("INSTALL fts")
+            logger.debug("FTS extension installed successfully")
+        except Exception as e:
+            logger.error(f"Failed to install FTS extension: {e}")
+            raise DatabaseError(f"Failed to install FTS extension: {e}") from e
+        finally:
+            conn.close()
+
     def _create_read_connection(self) -> duckdb.DuckDBPyConnection:
         """创建只读连接。
 
         Returns:
             只读 DuckDB 连接实例。
         """
-        return duckdb.connect(str(self.db_path), read_only=True)
+        conn = duckdb.connect(str(self.db_path), read_only=True)
+        try:
+            conn.execute("LOAD fts")
+        except Exception as e:
+            logger.debug(f"Failed to load FTS extension in read-only connection: {e}")
+        return conn
 
     def _create_write_connection(self) -> duckdb.DuckDBPyConnection:
         """创建写连接。
@@ -74,7 +99,10 @@ class DBMixin(BaseEngine):
         Returns:
             读写 DuckDB 连接实例。
         """
-        return duckdb.connect(str(self.db_path), read_only=False)
+        conn = duckdb.connect(str(self.db_path), read_only=False)
+        conn.execute("INSTALL fts")
+        conn.execute("LOAD fts")
+        return conn
 
     def execute_read(self, sql: str, params: list | None = None) -> list:
         """执行读操作（可并发）。

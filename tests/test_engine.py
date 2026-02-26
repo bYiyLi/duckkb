@@ -81,7 +81,6 @@ class TestEngineConfig:
         """测试获取全局配置。"""
         global_config = engine._get_global_config()
         assert global_config.chunk_size == 800
-        assert global_config.embedding_model == "text-embedding-3-small"
         assert global_config.tokenizer == "jieba"
 
     def test_embedding_dim(self, engine):
