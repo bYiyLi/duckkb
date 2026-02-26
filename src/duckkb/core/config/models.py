@@ -50,10 +50,12 @@ class StorageConfig(BaseModel):
     Attributes:
         data_dir: 数据目录路径，用于存储数据库文件和索引。
         partition_by_date: 是否按日期分区存储数据。
+        max_rows_per_file: 每个文件最大行数，用于分片导出。
     """
 
     data_dir: Path
     partition_by_date: bool = True
+    max_rows_per_file: int = Field(default=1000, ge=100, le=10000)
 
     @field_validator("data_dir", mode="before")
     @classmethod

@@ -2,42 +2,6 @@
 
 import pytest
 
-from duckkb.core.mixins.storage import compute_deterministic_id
-
-
-class TestDeterministicId:
-    """确定性 ID 测试。"""
-
-    def test_compute_deterministic_id_consistent(self):
-        """测试 ID 计算一致性。"""
-        id1 = compute_deterministic_id(["张明"])
-        id2 = compute_deterministic_id(["张明"])
-        assert id1 == id2
-
-    def test_compute_deterministic_id_different(self):
-        """测试不同值产生不同 ID。"""
-        id1 = compute_deterministic_id(["张明"])
-        id2 = compute_deterministic_id(["李婷"])
-        assert id1 != id2
-
-    def test_compute_deterministic_id_multiple_fields(self):
-        """测试多字段 ID 计算。"""
-        id1 = compute_deterministic_id(["张明", "研发部"])
-        id2 = compute_deterministic_id(["张明", "产品部"])
-        assert id1 != id2
-
-    def test_compute_deterministic_id_integer(self):
-        """测试整数值 ID 计算。"""
-        id1 = compute_deterministic_id([123])
-        id2 = compute_deterministic_id([123])
-        assert id1 == id2
-
-    def test_compute_deterministic_id_mixed_types(self):
-        """测试混合类型 ID 计算。"""
-        id1 = compute_deterministic_id(["张明", 28, True])
-        id2 = compute_deterministic_id(["张明", 28, True])
-        assert id1 == id2
-
 
 class TestStorageMixin:
     """存储 Mixin 测试。"""
@@ -52,7 +16,7 @@ class TestStorageMixin:
         count = await async_engine.load_table(
             table_name="characters",
             path_pattern=str(data_dir / "*.jsonl"),
-            identity_fields=["name"],
+            unique_fields=["name"],
         )
         assert count == 0
 

@@ -286,19 +286,21 @@ class TestOntologyMixin:
         """测试生成节点 DDL。"""
         ddl = engine._generate_node_ddl(engine.ontology.nodes["Character"])
         assert "CREATE TABLE IF NOT EXISTS characters" in ddl
-        assert "__id BIGINT PRIMARY KEY" in ddl
+        assert "__id BIGINT DEFAULT nextval" in ddl
         assert "__created_at TIMESTAMP" in ddl
         assert "__updated_at TIMESTAMP" in ddl
         assert "name VARCHAR" in ddl
         assert "bio VARCHAR" in ddl
+        assert "PRIMARY KEY(name)" in ddl
 
     def test_generate_edge_ddl(self, engine):
         """测试生成边 DDL。"""
         ddl = engine._generate_edge_ddl("knows", engine.ontology.edges["knows"])
         assert "CREATE TABLE IF NOT EXISTS edge_knows" in ddl
-        assert "__id BIGINT PRIMARY KEY" in ddl
+        assert "__id BIGINT DEFAULT nextval" in ddl
         assert "__from_id BIGINT NOT NULL" in ddl
         assert "__to_id BIGINT NOT NULL" in ddl
+        assert "PRIMARY KEY(__from_id, __to_id)" in ddl
 
     def test_get_bundle_schema(self, engine):
         """测试获取知识包 Schema。"""

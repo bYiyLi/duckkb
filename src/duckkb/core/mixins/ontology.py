@@ -118,10 +118,11 @@ class OntologyMixin(BaseEngine):
         """生成节点表 DDL。
 
         表结构：
-        - __id BIGINT PRIMARY KEY (主键)
+        - __id BIGINT (自增 ID，非主键)
         - __created_at TIMESTAMP (创建时间)
         - __updated_at TIMESTAMP (更新时间)
         - 其他字段根据 json_schema 推断
+        - PRIMARY KEY 基于 identity 字段
 
         Args:
             node_type: 节点类型定义。
@@ -129,8 +130,10 @@ class OntologyMixin(BaseEngine):
         Returns:
             CREATE TABLE IF NOT EXISTS 语句。
         """
+        table_name = node_type.table
+        seq_name = f"{table_name}_id_seq"
         columns = [
-            "    __id BIGINT PRIMARY KEY",
+            f"    __id BIGINT DEFAULT nextval('{seq_name}')",
             "    __created_at TIMESTAMP",
             "    __updated_at TIMESTAMP",
         ]
@@ -141,19 +144,27 @@ class OntologyMixin(BaseEngine):
                 col_type = self._json_type_to_duckdb(prop_def)
                 columns.append(f"    {prop_name} {col_type}")
 
+        if node_type.identity:
+            identity_cols = ", ".join(node_type.identity)
+            columns.append(f"    PRIMARY KEY({identity_cols})")
+
         columns_str = ",\n".join(columns)
-        return f"CREATE TABLE IF NOT EXISTS {node_type.table} (\n{columns_str}\n);"
+        return (
+            f"CREATE SEQUENCE IF NOT EXISTS {seq_name} START 1;\n"
+            f"CREATE TABLE IF NOT EXISTS {table_name} (\n{columns_str}\n);"
+        )
 
     def _generate_edge_ddl(self, edge_name: str, edge_type: EdgeType) -> str:
         """生成边表 DDL。
 
         表结构：
-        - __id BIGINT PRIMARY KEY
+        - __id BIGINT (自增 ID，非主键)
         - __from_id BIGINT (起始节点ID)
         - __to_id BIGINT (目标节点ID)
         - __created_at TIMESTAMP (创建时间)
         - __updated_at TIMESTAMP (更新时间)
         - 其他字段根据 json_schema 推断
+        - PRIMARY KEY(__from_id, __to_id) 保证边唯一
 
         Args:
             edge_name: 边类型名称。
@@ -163,8 +174,9 @@ class OntologyMixin(BaseEngine):
             CREATE TABLE IF NOT EXISTS 语句及索引语句。
         """
         table_name = f"edge_{edge_name}"
+        seq_name = f"{table_name}_id_seq"
         columns = [
-            "    __id BIGINT PRIMARY KEY",
+            f"    __id BIGINT DEFAULT nextval('{seq_name}')",
             "    __from_id BIGINT NOT NULL",
             "    __to_id BIGINT NOT NULL",
             "    __created_at TIMESTAMP",
@@ -177,8 +189,13 @@ class OntologyMixin(BaseEngine):
                 col_type = self._json_type_to_duckdb(prop_def)
                 columns.append(f"    {prop_name} {col_type}")
 
+        columns.append("    PRIMARY KEY(__from_id, __to_id)")
+
         columns_str = ",\n".join(columns)
-        ddl = f"CREATE TABLE IF NOT EXISTS {table_name} (\n{columns_str}\n);"
+        ddl = (
+            f"CREATE SEQUENCE IF NOT EXISTS {seq_name} START 1;\n"
+            f"CREATE TABLE IF NOT EXISTS {table_name} (\n{columns_str}\n);"
+        )
 
         index_config = edge_type.index or EdgeIndexConfig()
         index_statements = []

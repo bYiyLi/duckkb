@@ -15,7 +15,6 @@ from jsonschema import ValidationError, validate
 from duckkb.constants import validate_table_name
 from duckkb.core.base import BaseEngine
 from duckkb.core.mixins.index import SEARCH_CACHE_TABLE, SEARCH_INDEX_TABLE
-from duckkb.core.mixins.storage import compute_deterministic_id
 from duckkb.logger import logger
 
 
@@ -228,19 +227,31 @@ class ImportMixin(BaseEngine):
             source = item.get("source", {})
             target = item.get("target", {})
 
-            source_identity = [source.get(f) for f in source_node_def.identity]
-            source_id = compute_deterministic_id(source_identity)
+            source_identity_values = [source.get(f) for f in source_node_def.identity]
+            source_placeholders = " AND ".join(
+                f"{f} = ?" for f in source_node_def.identity
+            )
+            source_row = conn.execute(
+                f"SELECT __id FROM {source_node_def.table} WHERE {source_placeholders}",
+                source_identity_values,
+            ).fetchone()
 
-            if not self._node_exists_in_transaction(conn, source_node_def.table, source_id):
+            if not source_row:
                 raise ValueError(
                     f"[{idx}] Cannot create '{edge_type}' relation: "
                     f"Source '{edge_def.from_}' with identity {source} not found."
                 )
 
-            target_identity = [target.get(f) for f in target_node_def.identity]
-            target_id = compute_deterministic_id(target_identity)
+            target_identity_values = [target.get(f) for f in target_node_def.identity]
+            target_placeholders = " AND ".join(
+                f"{f} = ?" for f in target_node_def.identity
+            )
+            target_row = conn.execute(
+                f"SELECT __id FROM {target_node_def.table} WHERE {target_placeholders}",
+                target_identity_values,
+            ).fetchone()
 
-            if not self._node_exists_in_transaction(conn, target_node_def.table, target_id):
+            if not target_row:
                 raise ValueError(
                     f"[{idx}] Cannot create '{edge_type}' relation: "
                     f"Target '{edge_def.to}' with identity {target} not found."
@@ -405,6 +416,7 @@ class ImportMixin(BaseEngine):
         """同步 upsert 节点（批量优化版）。
 
         使用 INSERT ... ON CONFLICT DO UPDATE 语法，保留原始 __created_at。
+        通过 UNIQUE 约束（identity 字段）处理冲突。
 
         Args:
             conn: 数据库连接。
@@ -426,16 +438,11 @@ class ImportMixin(BaseEngine):
         now = datetime.now(UTC)
 
         records: list[dict[str, Any]] = []
-        record_ids: list[int] = []
         for item in items:
             record = {k: v for k, v in item.items() if k not in ("type", "action")}
-            identity_values = [record.get(f) for f in node_def.identity]
-            record_id = compute_deterministic_id(identity_values)
-            record["__id"] = record_id
             record["__created_at"] = now
             record["__updated_at"] = now
             records.append(record)
-            record_ids.append(record_id)
 
         if not records:
             return [], 0
@@ -444,7 +451,8 @@ class ImportMixin(BaseEngine):
         placeholders = ", ".join(["?" for _ in columns])
         batch_params = [[record[c] for c in columns] for record in records]
 
-        update_columns = [c for c in columns if c != "__id"]
+        identity_cols = ", ".join(node_def.identity)
+        update_columns = [c for c in columns if c not in ("__id",) + tuple(node_def.identity)]
         update_set = ", ".join(
             f"{c} = {table_name}.{c}" if c == "__created_at" else f"{c} = excluded.{c}"
             for c in update_columns
@@ -452,9 +460,20 @@ class ImportMixin(BaseEngine):
 
         conn.executemany(
             f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({placeholders}) "
-            f"ON CONFLICT (__id) DO UPDATE SET {update_set}",
+            f"ON CONFLICT ({identity_cols}) DO UPDATE SET {update_set}",
             batch_params,
         )
+
+        identity_placeholders = " AND ".join(f"{f} = ?" for f in node_def.identity)
+        record_ids: list[int] = []
+        for record in records:
+            identity_values = [record.get(f) for f in node_def.identity]
+            row = conn.execute(
+                f"SELECT __id FROM {table_name} WHERE {identity_placeholders}",
+                identity_values,
+            ).fetchone()
+            if row:
+                record_ids.append(row[0])
 
         return record_ids, len(records)
 
@@ -464,6 +483,7 @@ class ImportMixin(BaseEngine):
         """同步删除节点（批量优化版）。
 
         先删除相关的边，再删除节点。
+        通过业务键查询节点 ID。
 
         Args:
             conn: 数据库连接。
@@ -483,12 +503,17 @@ class ImportMixin(BaseEngine):
         table_name = node_def.table
         validate_table_name(table_name)
 
+        identity_placeholders = " AND ".join(f"{f} = ?" for f in node_def.identity)
         record_ids: list[int] = []
         for item in items:
             record = {k: v for k, v in item.items() if k not in ("type", "action")}
             identity_values = [record.get(f) for f in node_def.identity]
-            record_id = compute_deterministic_id(identity_values)
-            record_ids.append(record_id)
+            row = conn.execute(
+                f"SELECT __id FROM {table_name} WHERE {identity_placeholders}",
+                identity_values,
+            ).fetchone()
+            if row:
+                record_ids.append(row[0])
 
         if not record_ids:
             return [], 0
@@ -617,6 +642,7 @@ class ImportMixin(BaseEngine):
         """同步 upsert 边（批量优化版）。
 
         使用 INSERT ... ON CONFLICT DO UPDATE 语法，保留原始 __created_at。
+        通过 UNIQUE(__from_id, __to_id) 约束处理冲突。
 
         Args:
             conn: 数据库连接。
@@ -652,14 +678,26 @@ class ImportMixin(BaseEngine):
             source = item.get("source", {})
             target = item.get("target", {})
 
-            source_identity = [source.get(f) for f in source_node.identity]
-            target_identity = [target.get(f) for f in target_node.identity]
+            source_identity_values = [source.get(f) for f in source_node.identity]
+            source_placeholders = " AND ".join(f"{f} = ?" for f in source_node.identity)
+            source_row = conn.execute(
+                f"SELECT __id FROM {source_node.table} WHERE {source_placeholders}",
+                source_identity_values,
+            ).fetchone()
+            source_id = source_row[0] if source_row else None
 
-            source_id = compute_deterministic_id(source_identity)
-            target_id = compute_deterministic_id(target_identity)
+            target_identity_values = [target.get(f) for f in target_node.identity]
+            target_placeholders = " AND ".join(f"{f} = ?" for f in target_node.identity)
+            target_row = conn.execute(
+                f"SELECT __id FROM {target_node.table} WHERE {target_placeholders}",
+                target_identity_values,
+            ).fetchone()
+            target_id = target_row[0] if target_row else None
+
+            if source_id is None or target_id is None:
+                continue
 
             record: dict[str, Any] = {
-                "__id": compute_deterministic_id([source_id, target_id]),
                 "__from_id": source_id,
                 "__to_id": target_id,
                 "__created_at": now,
@@ -679,7 +717,7 @@ class ImportMixin(BaseEngine):
         placeholders = ", ".join(["?" for _ in columns])
         batch_params = [[record[c] for c in columns] for record in records]
 
-        update_columns = [c for c in columns if c != "__id"]
+        update_columns = [c for c in columns if c not in ("__id", "__from_id", "__to_id")]
         update_set = ", ".join(
             f"{c} = {table_name}.{c}" if c == "__created_at" else f"{c} = excluded.{c}"
             for c in update_columns
@@ -687,7 +725,7 @@ class ImportMixin(BaseEngine):
 
         conn.executemany(
             f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({placeholders}) "
-            f"ON CONFLICT (__id) DO UPDATE SET {update_set}",
+            f"ON CONFLICT (__from_id, __to_id) DO UPDATE SET {update_set}",
             batch_params,
         )
 
@@ -695,6 +733,8 @@ class ImportMixin(BaseEngine):
 
     def _delete_edges_sync(self, conn: Any, edge_type: str, items: list[dict[str, Any]]) -> int:
         """同步删除边（批量优化版）。
+
+        通过 source/target 的业务键查询边 ID。
 
         Args:
             conn: 数据库连接。
@@ -728,13 +768,31 @@ class ImportMixin(BaseEngine):
             source = item.get("source", {})
             target = item.get("target", {})
 
-            source_identity = [source.get(f) for f in source_node.identity]
-            target_identity = [target.get(f) for f in target_node.identity]
+            source_identity_values = [source.get(f) for f in source_node.identity]
+            source_placeholders = " AND ".join(f"{f} = ?" for f in source_node.identity)
+            source_row = conn.execute(
+                f"SELECT __id FROM {source_node.table} WHERE {source_placeholders}",
+                source_identity_values,
+            ).fetchone()
+            source_id = source_row[0] if source_row else None
 
-            source_id = compute_deterministic_id(source_identity)
-            target_id = compute_deterministic_id(target_identity)
-            record_id = compute_deterministic_id([source_id, target_id])
-            record_ids.append(record_id)
+            target_identity_values = [target.get(f) for f in target_node.identity]
+            target_placeholders = " AND ".join(f"{f} = ?" for f in target_node.identity)
+            target_row = conn.execute(
+                f"SELECT __id FROM {target_node.table} WHERE {target_placeholders}",
+                target_identity_values,
+            ).fetchone()
+            target_id = target_row[0] if target_row else None
+
+            if source_id is None or target_id is None:
+                continue
+
+            edge_row = conn.execute(
+                f"SELECT __id FROM {table_name} WHERE __from_id = ? AND __to_id = ?",
+                [source_id, target_id],
+            ).fetchone()
+            if edge_row:
+                record_ids.append(edge_row[0])
 
         if not record_ids:
             return 0
@@ -1204,8 +1262,8 @@ class ImportMixin(BaseEngine):
             count = await self.dump_table(
                 table_name=node_def.table,
                 output_dir=output_dir,
-                identity_field=node_def.identity[0],
                 partition_by_date=self.config.storage.partition_by_date,
+                max_rows_per_file=self.config.storage.max_rows_per_file,
             )
             if count > 0:
                 dumped[node_type] = count
@@ -1216,8 +1274,8 @@ class ImportMixin(BaseEngine):
             count = await self.dump_table(
                 table_name=table_name,
                 output_dir=output_dir,
-                identity_field="__from_id",
                 partition_by_date=self.config.storage.partition_by_date,
+                max_rows_per_file=self.config.storage.max_rows_per_file,
             )
             if count > 0:
                 dumped[edge_name] = count

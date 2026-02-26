@@ -7,6 +7,7 @@ from pathlib import Path
 
 from duckkb.constants import validate_table_name
 from duckkb.core.base import BaseEngine
+from duckkb.exceptions import FTSError
 from duckkb.logger import logger
 
 SEARCH_INDEX_TABLE = "_sys_search_index"
@@ -104,7 +105,7 @@ class IndexMixin(BaseEngine):
             else:
                 logger.debug("No fts_content in search index, skipping FTS index creation")
         except Exception as e:
-            logger.warning(f"Failed to create FTS index: {e}")
+            raise FTSError(f"Failed to create FTS index: {e}") from e
 
     async def build_index(
         self,

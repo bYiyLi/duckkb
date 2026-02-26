@@ -32,6 +32,15 @@ class DatabaseError(DuckKBError):
     pass
 
 
+class FTSError(DuckKBError):
+    """FTS 扩展不可用异常。
+
+    当 FTS 索引不存在或 FTS 扩展未安装时抛出。
+    """
+
+    pass
+
+
 class ValidationError(DuckKBError):
     """验证相关异常。
 

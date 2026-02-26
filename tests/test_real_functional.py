@@ -524,7 +524,9 @@ class TestSearch:
             results = await real_async_engine.fts_search("DuckKB 企业版", limit=5)
             assert isinstance(results, list)
         except Exception as e:
-            if "fts_match" in str(e):
+            from duckkb.exceptions import FTSError
+
+            if isinstance(e, FTSError):
                 pytest.skip("FTS extension not available")
             raise
 
@@ -535,7 +537,9 @@ class TestSearch:
             results = await real_async_engine.fts_search("知识库 解决方案", limit=5)
             assert isinstance(results, list)
         except Exception as e:
-            if "fts_match" in str(e):
+            from duckkb.exceptions import FTSError
+
+            if isinstance(e, FTSError):
                 pytest.skip("FTS extension not available")
             raise
 

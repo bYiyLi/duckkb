@@ -9,7 +9,7 @@ import orjson
 
 from duckkb.constants import QUERY_DEFAULT_LIMIT, QUERY_RESULT_SIZE_LIMIT, validate_table_name
 from duckkb.core.base import BaseEngine
-from duckkb.exceptions import DatabaseError
+from duckkb.exceptions import DatabaseError, FTSError
 from duckkb.logger import logger
 
 SEARCH_INDEX_TABLE = "_sys_search_index"
@@ -117,14 +117,14 @@ class SearchMixin(BaseEngine):
             node_def = self.ontology.nodes.get(node_type)
             if node_def is None:
                 raise ValueError(f"Unknown node type: {node_type}")
-            table_filter = "AND s.source_table = ?"
+            table_filter = "AND source_table = ?"
             params.append(node_def.table)
 
         vector_dim = len(query_vector)
         vector_literal = self._format_vector_for_sql(query_vector)
         prefetch_limit = limit * 3
 
-        fts_params = [query, query, query] + params
+        fts_params = params + [query, query, query] + params
 
         try:
             sql = f"""
@@ -182,6 +182,10 @@ class SearchMixin(BaseEngine):
             rows = await asyncio.to_thread(self.execute_read, sql, fts_params)
             return self._process_results(rows)
         except Exception as e:
+            if "match_bm25" in str(e).lower() or "fts" in str(e).lower():
+                raise FTSError(
+                    "FTS index not available. Please ensure FTS extension is installed and index is created."
+                ) from e
             logger.error(f"Hybrid search failed: {e}")
             raise DatabaseError(f"Hybrid search failed: {e}") from e
 
@@ -285,6 +289,10 @@ class SearchMixin(BaseEngine):
             rows = await asyncio.to_thread(self.execute_read, sql, params)
             return self._process_results(rows)
         except Exception as e:
+            if "match_bm25" in str(e).lower() or "fts" in str(e).lower():
+                raise FTSError(
+                    "FTS index not available. Please ensure FTS extension is installed and index is created."
+                ) from e
             logger.error(f"FTS search failed: {e}")
             raise DatabaseError(f"FTS search failed: {e}") from e
 
@@ -355,6 +363,11 @@ class SearchMixin(BaseEngine):
             return []
 
         columns = self._extract_columns_from_sql(sql)
+        actual_col_count = len(rows[0])
+        if len(columns) != actual_col_count:
+            columns = columns[:actual_col_count]
+            if len(columns) < actual_col_count:
+                columns.extend([f"col_{i}" for i in range(len(columns), actual_col_count)])
         result = [dict(zip(columns, row, strict=True)) for row in rows]
 
         json_bytes = orjson.dumps(result)
