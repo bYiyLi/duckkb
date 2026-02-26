@@ -859,12 +859,18 @@ class ImportMixin(BaseEngine):
     def _chunk_text_sync(self, text: str) -> list[str]:
         """将文本切分为多个片段（同步版本）。
 
+        使用滑动窗口策略，支持重叠切片以提高检索召回率。
+        复用 ChunkingMixin 的 chunk_text 方法。
+
         Args:
             text: 待切分的文本。
 
         Returns:
             文本片段列表，空文本返回空列表。
         """
+        if hasattr(self, "chunk_text"):
+            return self.chunk_text(text)
+
         if not text:
             return []
 
@@ -872,10 +878,23 @@ class ImportMixin(BaseEngine):
         if len(text) <= chunk_size:
             return [text]
 
-        chunks = []
-        for i in range(0, len(text), chunk_size):
-            chunks.append(text[i : i + chunk_size])
-        return chunks
+        chunk_overlap = getattr(self, "_chunk_overlap", 100)
+        chunks: list[str] = []
+        start = 0
+        step = chunk_size - chunk_overlap
+
+        while start < len(text):
+            end = start + chunk_size
+            chunk = text[start:end]
+
+            if len(chunk) < chunk_size // 2 and chunks:
+                chunks[-1] += chunk
+            else:
+                chunks.append(chunk)
+
+            start += step
+
+        return [c.strip() for c in chunks if c.strip()]
 
     def _compute_hash_sync(self, text: str) -> str:
         """计算文本哈希（同步版本）。

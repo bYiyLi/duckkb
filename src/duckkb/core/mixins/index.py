@@ -198,12 +198,20 @@ class IndexMixin(BaseEngine):
     def _chunk_text(self, text: str) -> list[str]:
         """将文本切分为多个片段。
 
+        使用滑动窗口策略，支持重叠切片以提高检索召回率。
+        复用 ChunkingMixin 的 chunk_text 方法。
+
         Args:
             text: 待切分的文本。
 
         Returns:
             文本片段列表。
         """
+        if hasattr(self, "chunk_text"):
+            return self.chunk_text(text)
+
+        if not text:
+            return []
         if len(text) <= self.chunk_size:
             return [text]
 
@@ -253,14 +261,19 @@ class IndexMixin(BaseEngine):
         await asyncio.to_thread(_cache_it)
         return fts_content
 
-    async def _get_or_compute_vector(self, text: str, content_hash: str) -> list[float] | None:
+    async def _get_or_compute_vector(
+        self, text: str, content_hash: str, max_retries: int = 3, retry_delay: float = 1.0
+    ) -> list[float] | None:
         """获取或计算向量嵌入。
 
         优先从缓存获取，缓存未命中则计算并存入缓存。
+        支持重试机制以提高容错性。
 
         Args:
             text: 待向量化文本。
             content_hash: 文本哈希。
+            max_retries: 最大重试次数，默认 3 次。
+            retry_delay: 重试间隔秒数，默认 1.0 秒。
 
         Returns:
             向量嵌入。
@@ -277,22 +290,30 @@ class IndexMixin(BaseEngine):
         if cached:
             return cached
 
-        try:
-            vector = await self._compute_embedding(text)
+        for attempt in range(max_retries):
+            try:
+                vector = await self._compute_embedding(text)
 
-            def _cache_it() -> None:
-                now = datetime.now(UTC)
-                self.conn.execute(
-                    f"INSERT OR REPLACE INTO {SEARCH_CACHE_TABLE} "
-                    "(content_hash, vector, last_used, created_at) VALUES (?, ?, ?, ?)",
-                    [content_hash, vector, now, now],
-                )
+                def _cache_it(v: list[float] = vector) -> None:
+                    now = datetime.now(UTC)
+                    self.conn.execute(
+                        f"INSERT OR REPLACE INTO {SEARCH_CACHE_TABLE} "
+                        "(content_hash, vector, last_used, created_at) VALUES (?, ?, ?, ?)",
+                        [content_hash, v, now, now],
+                    )
 
-            await asyncio.to_thread(_cache_it)
-            return vector
-        except Exception as e:
-            logger.error(f"Failed to compute embedding: {e}")
-            return None
+                await asyncio.to_thread(_cache_it)
+                return vector
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logger.warning(
+                        f"Failed to compute embedding (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {retry_delay}s..."
+                    )
+                    await asyncio.sleep(retry_delay)
+                else:
+                    logger.error(f"Failed to compute embedding after {max_retries} attempts: {e}")
+
+        return None
 
     async def _segment_text(self, text: str) -> str:
         """分词处理（由 TokenizerMixin 提供）。"""

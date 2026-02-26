@@ -81,6 +81,7 @@ def test_global_config():
 
 
 def test_app_context(tmp_path):
+    AppContext.reset()
     ctx = AppContext.init(tmp_path)
     assert ctx.kb_path == tmp_path.resolve()
     assert ctx.kb_config.embedding.model == "text-embedding-3-small"
@@ -88,6 +89,7 @@ def test_app_context(tmp_path):
 
 
 def test_app_context_get():
+    AppContext.reset()
     with pytest.raises(RuntimeError, match="not initialized"):
         AppContext.get()
 

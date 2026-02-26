@@ -1,5 +1,6 @@
 """本体管理 Mixin。"""
 
+import json
 from typing import Any
 
 from duckkb.core.base import BaseEngine
@@ -23,6 +24,28 @@ JSON_SCHEMA_TYPE_MAP = {
     "boolean": "boolean",
     "array": "array",
     "object": "object",
+}
+
+SYSTEM_TABLES_DDL = {
+    "_sys_search_index": """CREATE TABLE IF NOT EXISTS _sys_search_index (
+    source_table VARCHAR NOT NULL,
+    source_id BIGINT NOT NULL,
+    source_field VARCHAR NOT NULL,
+    chunk_seq INTEGER NOT NULL DEFAULT 0,
+    content VARCHAR,
+    fts_content VARCHAR,
+    vector FLOAT[],
+    content_hash VARCHAR,
+    created_at TIMESTAMP,
+    PRIMARY KEY (source_table, source_id, source_field, chunk_seq)
+);""",
+    "_sys_search_cache": """CREATE TABLE IF NOT EXISTS _sys_search_cache (
+    content_hash VARCHAR PRIMARY KEY,
+    fts_content VARCHAR,
+    vector FLOAT[],
+    last_used TIMESTAMP,
+    created_at TIMESTAMP
+);""",
 }
 
 
@@ -109,7 +132,7 @@ class OntologyMixin(BaseEngine):
             "    __id BIGINT PRIMARY KEY",
             "    __created_at TIMESTAMP",
             "    __updated_at TIMESTAMP",
-            "    __date DATE GENERATED ALWAYS AS (CAST(__updated_at AS DATE)) STORED",
+            "    __date DATE GENERATED ALWAYS AS (CAST(__updated_at AS DATE)) VIRTUAL",
         ]
 
         schema = node_type.json_schema
@@ -147,7 +170,7 @@ class OntologyMixin(BaseEngine):
             "    __to_id BIGINT NOT NULL",
             "    __created_at TIMESTAMP",
             "    __updated_at TIMESTAMP",
-            "    __date DATE GENERATED ALWAYS AS (CAST(__updated_at AS DATE)) STORED",
+            "    __date DATE GENERATED ALWAYS AS (CAST(__updated_at AS DATE)) VIRTUAL",
         ]
 
         schema = edge_type.json_schema
@@ -332,5 +355,156 @@ class OntologyMixin(BaseEngine):
         if edge_def.json_schema and "properties" in edge_def.json_schema:
             for prop_name in edge_def.json_schema["properties"]:
                 lines.append(f'  {prop_name}: "..."')
+
+        return "\n".join(lines)
+
+    def get_knowledge_intro(self) -> str:
+        """生成知识库介绍的 Markdown 文档。
+
+        返回包含使用说明、导入格式、表结构和知识图谱关系的完整介绍。
+
+        Returns:
+            Markdown 格式的知识库介绍文档。
+        """
+        sections = [
+            "# 知识库介绍\n",
+            self._format_usage_instructions(),
+            self._format_import_schema_as_markdown(),
+            "## 表结构\n",
+            self._format_node_tables_as_markdown(),
+            self._format_edge_tables_as_markdown(),
+            self._format_system_tables_as_markdown(),
+            "## 知识图谱关系\n",
+            self._format_relationship_table(),
+            "### 关系图\n",
+            f"```mermaid\n{self._generate_mermaid_knowledge_graph()}\n```",
+        ]
+        return "\n".join(sections)
+
+    def _format_usage_instructions(self) -> str:
+        """格式化使用说明。
+
+        Returns:
+            使用说明的 Markdown 片段。
+        """
+        instructions = self.kb_config.usage_instructions or "暂无使用说明。"
+        return f"## 使用说明\n\n{instructions}\n"
+
+    def _format_import_schema_as_markdown(self) -> str:
+        """格式化导入数据格式为 Markdown。
+
+        Returns:
+            导入数据格式的 Markdown 片段。
+        """
+        bundle_schema = self.get_bundle_schema()
+        schema_json = json.dumps(bundle_schema["full_bundle_schema"], ensure_ascii=False, indent=2)
+        example_yaml = bundle_schema["example_yaml"]
+
+        return f"""## 导入数据格式
+
+### JSON Schema
+
+```json
+{schema_json}
+```
+
+### YAML 示例
+
+```yaml
+{example_yaml}
+```
+"""
+
+    def _format_node_tables_as_markdown(self) -> str:
+        """格式化节点表结构为 Markdown。
+
+        Returns:
+            节点表结构的 Markdown 片段。
+        """
+        sections = ["### 节点表\n"]
+        for node_name, node_def in self.ontology.nodes.items():
+            ddl = self._generate_node_ddl(node_def)
+            sections.append(f"#### {node_name} ({node_def.table})\n\n```sql\n{ddl}\n```\n")
+        return "\n".join(sections)
+
+    def _format_edge_tables_as_markdown(self) -> str:
+        """格式化边表结构为 Markdown。
+
+        Returns:
+            边表结构的 Markdown 片段。
+        """
+        if not self.ontology.edges:
+            return ""
+
+        sections = ["### 边表\n"]
+        for edge_name, edge_def in self.ontology.edges.items():
+            table_name = f"edge_{edge_name}"
+            ddl = self._generate_edge_ddl(edge_name, edge_def)
+            sections.append(f"#### {edge_name} ({table_name})\n\n```sql\n{ddl}\n```\n")
+        return "\n".join(sections)
+
+    def _format_system_tables_as_markdown(self) -> str:
+        """格式化系统表结构为 Markdown。
+
+        Returns:
+            系统表结构的 Markdown 片段。
+        """
+        sections = ["### 系统表\n"]
+        for table_name, ddl in SYSTEM_TABLES_DDL.items():
+            sections.append(f"#### {table_name}\n\n```sql\n{ddl}\n```\n")
+        return "\n".join(sections)
+
+    def _format_relationship_table(self) -> str:
+        """生成关系详情表格。
+
+        Returns:
+            关系详情的 Markdown 表格。
+        """
+        if not self.ontology.edges:
+            return "暂无边定义。\n"
+
+        lines = [
+            "### 关系详情\n",
+            "| 边名称 | 起始节点 | 目标节点 | 基数 | 起始节点标识 | 目标节点标识 |",
+            "|--------|----------|----------|------|--------------|--------------|",
+        ]
+
+        for edge_name, edge_def in self.ontology.edges.items():
+            from_node = edge_def.from_
+            to_node = edge_def.to
+            cardinality = edge_def.cardinality or "N:N"
+
+            from_identity = ", ".join(self.ontology.nodes[from_node].identity)
+            to_identity = ", ".join(self.ontology.nodes[to_node].identity)
+
+            lines.append(
+                f"| {edge_name} | {from_node} | {to_node} | {cardinality} | "
+                f"{from_identity} | {to_identity} |"
+            )
+
+        return "\n".join(lines)
+
+    def _generate_mermaid_knowledge_graph(self) -> str:
+        """生成知识图谱关系的 Mermaid 图。
+
+        Returns:
+            Mermaid 图代码。
+        """
+        if not self.ontology.edges:
+            return "graph LR\n    暂无边定义"
+
+        lines = ["graph LR"]
+
+        for edge_name, edge_def in self.ontology.edges.items():
+            from_node = edge_def.from_
+            to_node = edge_def.to
+            cardinality = edge_def.cardinality or "N:N"
+
+            from_identity = ", ".join(self.ontology.nodes[from_node].identity)
+            to_identity = ", ".join(self.ontology.nodes[to_node].identity)
+
+            label = f"{edge_name}<br/>{cardinality}<br/>{from_identity}→{to_identity}"
+
+            lines.append(f'    {from_node} -- "{label}" --> {to_node}')
 
         return "\n".join(lines)

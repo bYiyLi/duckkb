@@ -19,11 +19,12 @@ def compute_deterministic_id(identity_values: list) -> int:
         identity_values: 标识字段值列表。
 
     Returns:
-        确定性的整数 ID。
+        确定性的整数 ID（INT64 范围内）。
     """
     combined = "\x00".join(str(v) for v in identity_values)
     hash_hex = hashlib.sha256(combined.encode()).hexdigest()
-    return int(hash_hex[:16], 16)
+    max_int64 = (1 << 63) - 1
+    return int(hash_hex[:16], 16) % max_int64
 
 
 class StorageMixin(BaseEngine):

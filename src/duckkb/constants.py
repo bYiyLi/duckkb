@@ -1,10 +1,7 @@
 """全局常量定义模块。
 
 本模块定义了 DuckKB 项目中使用的所有全局常量，包括：
-- 目录和文件命名
 - 查询限制
-- 缓存配置
-- 错误反馈设置
 - 嵌入模型配置
 - 日志级别配置
 - 类型别名定义
@@ -14,25 +11,8 @@ import re
 
 from duckkb.exceptions import InvalidTableNameError
 
-DEFAULT_KB_DIR_NAME = "knowledge-bases"
-DATA_DIR_NAME = "data"
-BUILD_DIR_NAME = ".build"
-DB_FILE_NAME = "knowledge.db"
-SCHEMA_FILE_NAME = "schema.sql"
-SYS_SEARCH_TABLE = "_sys_search"
-SYS_CACHE_TABLE = "_sys_cache"
-
-BACKUP_DIR_NAME = "backups"
-MAX_BACKUPS = 5
-SYNC_STATE_FILE = "sync_state.json"
-
 QUERY_RESULT_SIZE_LIMIT = 2 * 1024 * 1024
 QUERY_DEFAULT_LIMIT = 1000
-PREFETCH_MULTIPLIER = 2
-
-CACHE_EXPIRE_DAYS = 30
-
-MAX_ERROR_FEEDBACK = 5
 
 EMBEDDING_MODEL_DIMS: dict[str, int] = {
     "text-embedding-3-small": 1536,
@@ -50,7 +30,6 @@ VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 VALID_EMBEDDING_DIMS = {1536, 3072}
 VALID_METRICS = {"cosine", "l2", "inner"}
 DEFAULT_METRIC = "cosine"
-VALID_CARDINALITIES = {"1:1", "1:N", "N:1", "N:N"}
 
 TABLE_NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 

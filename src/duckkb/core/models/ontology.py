@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -74,7 +74,7 @@ def _validate_schema_structure(schema: dict[str, object], path: str) -> None:
         required = schema.get("required") or []
         if not isinstance(required, list):
             _fail(path, "required must be a list")
-        props = schema.get("properties") or {}
+        props = cast("dict[str, object]", schema.get("properties") or {})
         if not isinstance(props, dict):
             _fail(path, "properties must be an object")
         for key, prop in props.items():
@@ -221,7 +221,7 @@ def _coerce_by_schema(schema: dict[str, object], data: object) -> object:
     if schema_type == "object":
         if not isinstance(data, dict):
             return data
-        props = schema.get("properties") or {}
+        props = cast("dict[str, object]", schema.get("properties") or {})
         out: dict[str, object] = {}
         for key, value in data.items():
             prop_schema = props.get(key)
@@ -310,6 +310,21 @@ class VectorConfig(BaseModel):
         return v
 
 
+class SearchConfig(BaseModel):
+    """搜索配置。
+
+    定义节点的搜索索引配置。
+
+    Attributes:
+        full_text: 全文索引字段列表。
+        vectors: 向量索引字段列表。
+    """
+
+    full_text: list[str] | None = None
+    vectors: list[str] | None = None
+    model_config = ConfigDict(extra="forbid")
+
+
 class NodeType(BaseModel):
     """节点类型定义。
 
@@ -320,13 +335,15 @@ class NodeType(BaseModel):
         identity: 标识字段列表（主键）。
         json_schema: 属性定义（JSON Schema Draft 7）。
         vectors: 向量字段定义。
+        search: 搜索配置。
     """
 
     table: str
     identity: list[str] = Field(...)
     json_schema: dict[str, Any] | None = Field(default=None, alias="schema")
     vectors: dict[str, VectorConfig] | None = None
-    model_config = ConfigDict(extra="forbid")
+    search: SearchConfig | None = None
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     @field_validator("identity")
     @classmethod

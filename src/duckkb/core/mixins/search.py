@@ -79,10 +79,23 @@ class SearchMixin(BaseEngine):
         )
 
     async def _get_query_vector(self, query: str) -> list[float] | None:
-        """获取查询向量。"""
+        """获取查询向量并校验维度。
+
+        Returns:
+            校验通过的查询向量，校验失败返回 None。
+        """
         if hasattr(self, "embed_single"):
             try:
-                return await self.embed_single(query)
+                vector = await self.embed_single(query)
+                if hasattr(self, "embedding_dim"):
+                    expected_dim = self.embedding_dim
+                    actual_dim = len(vector)
+                    if actual_dim != expected_dim:
+                        logger.error(
+                            f"Vector dimension mismatch: expected {expected_dim}, got {actual_dim}"
+                        )
+                        return None
+                return vector
             except Exception as e:
                 logger.error(f"Failed to embed query: {e}")
         return None
@@ -108,7 +121,6 @@ class SearchMixin(BaseEngine):
 
         vector_dim = len(query_vector)
         vector_literal = self._format_vector_literal(query_vector)
-        escaped_query = query.replace("'", "''")
         prefetch_limit = limit * 3
 
         sql = f"""
@@ -136,7 +148,7 @@ class SearchMixin(BaseEngine):
                 rank() OVER (ORDER BY fts_score DESC) as rnk
             FROM {SEARCH_INDEX_TABLE}
             WHERE fts_content IS NOT NULL 
-              AND fts_match(fts_content, '{escaped_query}') {table_filter}
+              AND fts_match(fts_content, ?) {table_filter}
             ORDER BY score DESC
             LIMIT {prefetch_limit}
         ),
@@ -166,8 +178,10 @@ class SearchMixin(BaseEngine):
         LIMIT {limit}
         """
 
+        fts_params = [query] + params
+
         try:
-            rows = await asyncio.to_thread(self._execute_query, sql, params)
+            rows = await asyncio.to_thread(self._execute_query, sql, fts_params)
             return self._process_results(rows)
         except Exception as e:
             logger.error(f"Hybrid search failed: {e}")
@@ -244,7 +258,7 @@ class SearchMixin(BaseEngine):
             return []
 
         table_filter = ""
-        params: list[Any] = []
+        params: list[Any] = [query]
 
         if node_type:
             node_def = self.ontology.nodes.get(node_type)
@@ -253,14 +267,12 @@ class SearchMixin(BaseEngine):
             table_filter = "AND source_table = ?"
             params.append(node_def.table)
 
-        escaped_query = query.replace("'", "''")
-
         sql = f"""
         SELECT source_table, source_id, source_field, chunk_seq, content,
                fts_score as score
         FROM {SEARCH_INDEX_TABLE}
         WHERE fts_content IS NOT NULL 
-          AND fts_match(fts_content, '{escaped_query}') {table_filter}
+          AND fts_match(fts_content, ?) {table_filter}
         ORDER BY score DESC
         LIMIT {limit}
         """
@@ -305,12 +317,8 @@ class SearchMixin(BaseEngine):
     async def query_raw_sql(self, sql: str) -> list[dict[str, Any]]:
         """安全执行原始 SQL 查询。
 
-        安全检查：
-        1. 只允许 SELECT 查询（白名单模式）。
-        2. 禁止危险关键字。
-        3. 移除 SQL 注释后检查。
-        4. 自动添加 LIMIT。
-        5. 结果大小限制。
+        使用 DuckDB 原生只读模式保护，自动拒绝所有写操作。
+        自动添加 LIMIT 限制，防止返回过多数据。
 
         Args:
             sql: 原始 SQL 查询字符串。
@@ -319,55 +327,18 @@ class SearchMixin(BaseEngine):
             查询结果字典列表。
 
         Raises:
-            DatabaseError: SQL 包含禁止的关键字或不是 SELECT 查询。
-            ValueError: 结果集大小超限或执行失败。
+            ValueError: 结果集大小超限。
+            duckdb.Error: SQL 执行失败或包含写操作。
         """
         sql_stripped = sql.strip()
-        sql_upper = sql_stripped.upper()
 
-        if not sql_upper.startswith("SELECT"):
-            raise DatabaseError("Only SELECT queries are allowed.")
-
-        sql_no_comments = re.sub(r"--.*$", "", sql_stripped, flags=re.MULTILINE)
-        sql_no_comments = re.sub(r"/\*.*?\*/", "", sql_no_comments, flags=re.DOTALL)
-        sql_no_comments_upper = sql_no_comments.upper()
-
-        forbidden = [
-            "INSERT",
-            "UPDATE",
-            "DELETE",
-            "DROP",
-            "CREATE",
-            "ALTER",
-            "TRUNCATE",
-            "EXEC",
-            "EXECUTE",
-            "GRANT",
-            "REVOKE",
-            "ATTACH",
-            "DETACH",
-            "PRAGMA",
-            "IMPORT",
-            "EXPORT",
-            "COPY",
-            "LOAD",
-            "INSTALL",
-            "VACUUM",
-            "BEGIN",
-            "COMMIT",
-            "ROLLBACK",
-        ]
-        forbidden_pattern = r"\b(" + "|".join(forbidden) + r")\b"
-        if re.search(forbidden_pattern, sql_no_comments_upper):
-            raise DatabaseError("Forbidden keyword in SQL query.")
-
-        if not re.search(r"\bLIMIT\s+\d+", sql_upper):
+        if not re.search(r"\bLIMIT\s+\d+", sql_stripped.upper()):
             sql = sql_stripped + f" LIMIT {QUERY_DEFAULT_LIMIT}"
 
-        return await asyncio.to_thread(self._execute_raw_sql, sql)
+        return await asyncio.to_thread(self._execute_raw_sql_readonly, sql)
 
-    def _execute_raw_sql(self, sql: str) -> list[dict[str, Any]]:
-        """执行原始 SQL 查询并返回字典列表形式的结果。
+    def _execute_raw_sql_readonly(self, sql: str) -> list[dict[str, Any]]:
+        """在只读模式下执行 SQL 查询。
 
         Args:
             sql: 要执行的 SQL 查询。
@@ -376,9 +347,15 @@ class SearchMixin(BaseEngine):
             字典列表，键为列名，值为行值。
 
         Raises:
-            ValueError: 结果集大小超限或执行失败。
+            ValueError: 结果集大小超限。
+            duckdb.Error: SQL 执行失败或包含写操作。
         """
+        mode_result = self.conn.execute("SELECT current_setting('access_mode')").fetchone()
+        current_mode = mode_result[0] if mode_result else "automatic"
+
         try:
+            self.conn.execute("SET access_mode='read_only'")
+
             cursor = self.conn.execute(sql)
             if not cursor.description:
                 return []
@@ -387,21 +364,15 @@ class SearchMixin(BaseEngine):
 
             result = [dict(zip(columns, row, strict=True)) for row in rows]
 
-            try:
-                json_bytes = orjson.dumps(result)
-                if len(json_bytes) > QUERY_RESULT_SIZE_LIMIT:
-                    raise ValueError(
-                        f"Result set size exceeds {QUERY_RESULT_SIZE_LIMIT // (1024 * 1024)}MB limit. Please add LIMIT or refine your query."
-                    )
-            except ValueError:
-                raise
-            except (orjson.JSONEncodeError, TypeError):
-                pass
+            json_bytes = orjson.dumps(result)
+            if len(json_bytes) > QUERY_RESULT_SIZE_LIMIT:
+                raise ValueError(
+                    f"Result set size exceeds {QUERY_RESULT_SIZE_LIMIT // (1024 * 1024)}MB limit."
+                )
 
             return result
-        except Exception as e:
-            logger.error(f"SQL execution failed: {e}")
-            raise ValueError(str(e)) from e
+        finally:
+            self.conn.execute(f"SET access_mode='{current_mode}'")
 
     def _format_vector_literal(self, vector: list[float]) -> str:
         """格式化向量为 SQL 字面量。"""

@@ -16,7 +16,7 @@ from duckkb.logger import logger
 async def engine_lifespan(server: FastMCP[Any]) -> AsyncIterator[dict[str, Any]]:
     """Engine 生命周期管理。
 
-    在 MCP 服务启动时初始化引擎，关闭时清理资源。
+    在 MCP 服务启动时初始化引擎并加载已有数据，关闭时清理资源。
 
     Args:
         server: DuckMCP 实例。
@@ -26,7 +26,7 @@ async def engine_lifespan(server: FastMCP[Any]) -> AsyncIterator[dict[str, Any]]
     """
     duck_mcp = cast("DuckMCP", server)
     logger.info("Initializing knowledge base engine...")
-    duck_mcp.initialize()
+    await duck_mcp.async_initialize()
     logger.info("Knowledge base engine initialized.")
     try:
         yield {"engine": duck_mcp}
@@ -111,51 +111,46 @@ class DuckMCP(Engine, FastMCP):
 
     def _register_tools(self) -> None:
         """注册 MCP 工具。"""
-        self._register_knowledge_schema_tool()
-        self._register_import_knowledge_bundle_tool()
+        self._register_knowledge_intro_tool()
+        self._register_import_tool()
         self._register_search_tool()
         self._register_vector_search_tool()
         self._register_fts_search_tool()
         self._register_get_source_record_tool()
+        self._register_query_raw_sql_tool()
 
-    def _register_knowledge_schema_tool(self) -> None:
-        """注册 get_knowledge_schema 工具。"""
+    def _register_knowledge_intro_tool(self) -> None:
+        """注册 get_knowledge_intro 工具。"""
 
         @self.tool()
-        def get_knowledge_schema() -> str:
-            """获取知识库校验 Schema。
+        def get_knowledge_intro() -> str:
+            """获取知识库介绍。
 
-            返回当前知识库的完整校验规则（JSON Schema Draft 7），
-            用于验证 import_knowledge_bundle 的输入数据。
-
-            返回的 Schema 定义了 YAML 文件的合法结构：
-            - 根节点为数组类型
-            - 每个元素必须包含 type 字段指定实体类型
-            - 节点类型需要提供 identity 字段
-            - 边类型需要提供 source 和 target 对象
+            返回知识库的完整介绍文档（Markdown 格式），包含：
+            - 使用说明：知识库的用途和操作指南
+            - 导入数据格式：JSON Schema 和 YAML 示例
+            - 表结构：节点表、边表和系统表的 DDL
+            - 知识图谱关系：关系详情表格和 Mermaid 图
 
             Returns:
-                JSON 格式的 Schema 定义，包含：
-                - full_bundle_schema: 完整的 JSON Schema
-                - example_yaml: YAML 示例
+                Markdown 格式的知识库介绍文档。
             """
-            result = self.get_bundle_schema()
-            return json.dumps(result, ensure_ascii=False, indent=2)
+            return self.get_knowledge_intro()
 
-    def _register_import_knowledge_bundle_tool(self) -> None:
-        """注册 import_knowledge_bundle 工具。"""
+    def _register_import_tool(self) -> None:
+        """注册 import 工具。"""
 
-        @self.tool()
-        async def import_knowledge_bundle(temp_file_path: str) -> str:
-            """导入知识包。
+        @self.tool(name="import")
+        async def import_knowledge(temp_file_path: str) -> str:
+            """导入知识数据。
 
             从 YAML 文件导入数据到知识库。文件格式为数组，每个元素包含：
             - type: 实体类型（节点类型或边类型名称）
             - action: 操作类型（upsert/delete），默认 upsert
-            - 节点：identity 字段（根据 get_knowledge_schema 返回的 Schema）
+            - 节点：identity 字段（根据 get_knowledge_intro 返回的 Schema）
             - 边：source 和 target 对象
 
-            导入前会使用 get_knowledge_schema 返回的 Schema 进行完整校验。
+            导入前会使用 get_knowledge_intro 返回的 Schema 进行完整校验。
             校验失败会返回精确的错误位置，便于修复。
 
             导入后自动触发：

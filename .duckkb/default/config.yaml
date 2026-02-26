@@ -1,0 +1,139 @@
+embedding:
+  model: text-embedding-3-small
+  dim: 1536
+
+log_level: INFO
+
+global:
+  chunk_size: 800
+  embedding_model: text-embedding-3-small
+  tokenizer: jieba
+
+ontology:
+  nodes:
+    Character:
+      table: characters
+      identity: [name]
+      schema:
+        type: object
+        properties:
+          name:
+            type: string
+            description: 角色名称
+          age:
+            type: integer
+            description: 年龄
+          email:
+            type: string
+          bio:
+            type: string
+            description: 角色简介
+          status:
+            type: string
+          tags:
+            type: array
+            items:
+              type: string
+          metadata:
+            type: object
+        required: [name]
+      search:
+        full_text: [name, bio]
+        vectors: [bio]
+
+    Document:
+      table: documents
+      identity: [doc_id]
+      schema:
+        type: object
+        properties:
+          doc_id:
+            type: string
+          title:
+            type: string
+          content:
+            type: string
+            description: 文档内容
+          category:
+            type: string
+          word_count:
+            type: integer
+          created_at:
+            type: string
+        required: [doc_id, title]
+      search:
+        full_text: [title, content]
+        vectors: [content]
+
+    Product:
+      table: products
+      identity: [sku]
+      schema:
+        type: object
+        properties:
+          sku:
+            type: string
+          name:
+            type: string
+          description:
+            type: string
+          price:
+            type: number
+          stock:
+            type: integer
+          active:
+            type: boolean
+          rating:
+            type: number
+          categories:
+            type: array
+            items:
+              type: string
+        required: [sku, name]
+      search:
+        full_text: [name, description]
+        vectors: [description]
+
+  edges:
+    knows:
+      from: Character
+      to: Character
+      cardinality: N:N
+      schema:
+        type: object
+        properties:
+          since:
+            type: string
+          closeness:
+            type: number
+
+    authored:
+      from: Character
+      to: Document
+      cardinality: N:1
+      schema:
+        type: object
+        properties:
+          role:
+            type: string
+
+    mentions:
+      from: Document
+      to: Product
+      cardinality: N:N
+      schema:
+        type: object
+        properties:
+          context:
+            type: string
+          relevance:
+            type: number
+
+usage_instructions: |
+  这是一个测试知识库，用于验证 DuckKB 的所有核心功能。
+  
+  支持的操作：
+  - 节点 CRUD：Character, Document, Product
+  - 边 CRUD：knows, authored, mentions
+  - 搜索：混合搜索、向量搜索、全文搜索
+  - SQL 查询：只读 SQL 查询

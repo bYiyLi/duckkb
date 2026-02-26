@@ -11,7 +11,7 @@ from duckkb import __version__
 from duckkb.core.engine import Engine
 from duckkb.mcp.duck_mcp import DuckMCP
 
-DEFAULT_KB_PATH = Path("./knowledge-bases/default")
+DEFAULT_KB_PATH = Path(".duckkb/default")
 
 
 def _run_async(coro: Any) -> Any:
@@ -120,9 +120,10 @@ class DuckTyper(typer.Typer):
         """注册 CLI 命令。"""
         self._register_serve_command()
         self._register_version_command()
-        self._register_knowledge_schema_command()
-        self._register_import_knowledge_bundle_command()
+        self._register_knowledge_intro_command()
+        self._register_import_command()
         self._register_search_commands()
+        self._register_query_raw_sql_command()
 
     def _register_serve_command(self) -> None:
         """注册 serve 命令。"""
@@ -144,31 +145,34 @@ class DuckTyper(typer.Typer):
             """显示版本信息。"""
             typer.echo(f"DuckKB v{__version__}")
 
-    def _register_knowledge_schema_command(self) -> None:
-        """注册 get-knowledge-schema 命令。"""
+    def _register_knowledge_intro_command(self) -> None:
+        """注册 get-knowledge-intro 命令。"""
 
-        @self.command("get-knowledge-schema")
-        def get_knowledge_schema() -> None:
-            """获取知识库校验 Schema。
+        @self.command("get-knowledge-intro")
+        def get_knowledge_intro() -> None:
+            """获取知识库介绍。
 
-            返回当前知识库的完整校验规则（JSON Schema Draft 7），
-            用于验证 import-knowledge-bundle 的输入数据。
+            返回知识库的完整介绍文档（Markdown 格式），包含：
+            - 使用说明
+            - 导入数据格式
+            - 表结构
+            - 知识图谱关系
             """
             with Engine(self.kb_path) as engine:
-                result = engine.get_bundle_schema()
-            typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
+                result = engine.get_knowledge_intro()
+            typer.echo(result)
 
-    def _register_import_knowledge_bundle_command(self) -> None:
-        """注册 import-knowledge-bundle 命令。"""
+    def _register_import_command(self) -> None:
+        """注册 import 命令。"""
 
-        @self.command("import-knowledge-bundle")
-        def import_knowledge_bundle(
+        @self.command("import")
+        def import_knowledge(
             temp_file_path: Path = typer.Argument(
                 ...,
                 help="YAML 文件路径",
             ),
         ) -> None:
-            """导入知识包。
+            """导入知识数据。
 
             从 YAML 文件导入数据到知识库。文件格式为数组，每个元素包含：
             - type: 实体类型（节点类型或边类型名称）
@@ -178,8 +182,12 @@ class DuckTyper(typer.Typer):
             """
 
             async def _import() -> dict[str, Any]:
-                with Engine(self.kb_path) as engine:
+                engine = Engine(self.kb_path)
+                try:
+                    await engine.async_initialize()
                     return await engine.import_knowledge_bundle(str(temp_file_path))
+                finally:
+                    engine.close()
 
             result = _run_async(_import())
             typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
@@ -217,13 +225,17 @@ class DuckTyper(typer.Typer):
             """
 
             async def _search() -> list[dict[str, Any]]:
-                with Engine(self.kb_path) as engine:
+                engine = Engine(self.kb_path)
+                try:
+                    await engine.async_initialize()
                     return await engine.search(
                         query,
                         node_type=node_type,
                         limit=limit,
                         alpha=alpha,
                     )
+                finally:
+                    engine.close()
 
             result = _run_async(_search())
             typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
@@ -248,12 +260,16 @@ class DuckTyper(typer.Typer):
             """
 
             async def _search() -> list[dict[str, Any]]:
-                with Engine(self.kb_path) as engine:
+                engine = Engine(self.kb_path)
+                try:
+                    await engine.async_initialize()
                     return await engine.vector_search(
                         query,
                         node_type=node_type,
                         limit=limit,
                     )
+                finally:
+                    engine.close()
 
             result = _run_async(_search())
             typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
@@ -278,12 +294,16 @@ class DuckTyper(typer.Typer):
             """
 
             async def _search() -> list[dict[str, Any]]:
-                with Engine(self.kb_path) as engine:
+                engine = Engine(self.kb_path)
+                try:
+                    await engine.async_initialize()
                     return await engine.fts_search(
                         query,
                         node_type=node_type,
                         limit=limit,
                     )
+                finally:
+                    engine.close()
 
             result = _run_async(_search())
             typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
@@ -308,13 +328,41 @@ class DuckTyper(typer.Typer):
             """
 
             async def _get() -> dict[str, Any] | None:
-                with Engine(self.kb_path) as engine:
+                engine = Engine(self.kb_path)
+                try:
+                    await engine.async_initialize()
                     return await engine.get_source_record(
                         source_table=source_table,
                         source_id=source_id,
                     )
+                finally:
+                    engine.close()
 
             result = _run_async(_get())
+            typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
+
+    def _register_query_raw_sql_command(self) -> None:
+        """注册 query-raw-sql 命令。"""
+
+        @self.command("query-raw-sql")
+        def query_raw_sql(
+            sql: str = typer.Argument(..., help="要执行的 SQL 查询语句"),
+        ) -> None:
+            """执行只读 SQL 查询。
+
+            安全地执行原始 SQL 查询语句，仅支持 SELECT 操作。
+            系统会自动应用 LIMIT 限制，防止返回过多数据。
+            """
+
+            async def _query() -> list[dict[str, Any]]:
+                engine = Engine(self.kb_path)
+                try:
+                    await engine.async_initialize()
+                    return await engine.query_raw_sql(sql)
+                finally:
+                    engine.close()
+
+            result = _run_async(_query())
             typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
 
     def create_mcp(self, **kwargs: Any) -> DuckMCP:

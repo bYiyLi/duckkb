@@ -16,6 +16,7 @@ from duckkb.core.mixins import (
     StorageMixin,
     TokenizerMixin,
 )
+from duckkb.logger import logger
 
 
 class Engine(
@@ -100,6 +101,7 @@ class Engine(
         """初始化引擎。
 
         同步数据库表结构，创建搜索索引表。
+        注意：此方法不加载数据，需要异步加载请使用 async_initialize()。
 
         Returns:
             初始化后的引擎实例，支持链式调用。
@@ -107,6 +109,60 @@ class Engine(
         self.sync_schema()
         self.create_index_tables()
         return self
+
+    async def async_initialize(self) -> Self:
+        """异步初始化引擎。
+
+        同步数据库表结构，创建搜索索引表，并从文件系统加载已有数据。
+
+        Returns:
+            初始化后的引擎实例，支持链式调用。
+        """
+        self.sync_schema()
+        self.create_index_tables()
+        await self._load_existing_data()
+        return self
+
+    async def _load_existing_data(self) -> None:
+        """从文件系统加载已有数据。
+
+        加载所有节点类型、边类型和搜索缓存。
+        """
+        data_dir = self.config.storage.data_dir
+
+        if not data_dir.exists():
+            logger.debug(f"Data directory does not exist: {data_dir}")
+            return
+
+        loaded_nodes = 0
+        loaded_edges = 0
+
+        for node_type in self.ontology.nodes.keys():
+            try:
+                count = await self.load_node(node_type)
+                if count > 0:
+                    loaded_nodes += count
+            except Exception as e:
+                logger.warning(f"Failed to load node type {node_type}: {e}")
+
+        for edge_name in self.ontology.edges.keys():
+            try:
+                count = await self.load_edge(edge_name)
+                if count > 0:
+                    loaded_edges += count
+            except Exception as e:
+                logger.warning(f"Failed to load edge type {edge_name}: {e}")
+
+        cache_path = data_dir / "cache" / "search_cache.parquet"
+        if cache_path.exists():
+            try:
+                cache_count = await self.load_cache_from_parquet(cache_path)
+                logger.info(f"Loaded {cache_count} cache entries from {cache_path}")
+            except Exception as e:
+                logger.warning(f"Failed to load cache: {e}")
+
+        if loaded_nodes > 0 or loaded_edges > 0:
+            logger.info(f"Loaded existing data: {loaded_nodes} nodes, {loaded_edges} edges")
 
     def close(self) -> None:
         """关闭引擎。
