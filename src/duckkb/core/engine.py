@@ -183,6 +183,8 @@ class Engine(
 
         await self._rebuild_index_from_cache()
 
+        self._try_create_fts_index()
+
     def close(self) -> None:
         """关闭引擎。
 

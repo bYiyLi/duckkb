@@ -843,10 +843,16 @@ class ImportMixin(BaseEngine):
                             vector = self._get_or_compute_vector_sync(conn, chunk, content_hash)
 
                         conn.execute(
-                            f"INSERT OR REPLACE INTO {SEARCH_INDEX_TABLE} "
+                            f"INSERT INTO {SEARCH_INDEX_TABLE} "
                             "(source_table, source_id, source_field, chunk_seq, content, "
                             "fts_content, vector, content_hash, created_at) "
-                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                            "ON CONFLICT (source_table, source_id, source_field, chunk_seq) "
+                            "DO UPDATE SET content = excluded.content, "
+                            "fts_content = excluded.fts_content, "
+                            "vector = excluded.vector, "
+                            "content_hash = excluded.content_hash, "
+                            "created_at = excluded.created_at",
                             (
                                 table_name,
                                 source_id,
@@ -1347,10 +1353,16 @@ class ImportMixin(BaseEngine):
                 def _insert() -> None:
                     with self.write_transaction() as conn:
                         conn.executemany(
-                            f"INSERT OR REPLACE INTO {SEARCH_INDEX_TABLE} "
+                            f"INSERT INTO {SEARCH_INDEX_TABLE} "
                             "(source_table, source_id, source_field, chunk_seq, content, "
                             "fts_content, vector, content_hash, created_at) "
-                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                            "ON CONFLICT (source_table, source_id, source_field, chunk_seq) "
+                            "DO UPDATE SET content = excluded.content, "
+                            "fts_content = excluded.fts_content, "
+                            "vector = excluded.vector, "
+                            "content_hash = excluded.content_hash, "
+                            "created_at = excluded.created_at",
                             entries,
                         )
 

@@ -11,7 +11,6 @@ from duckkb.logger import logger
 
 SEARCH_INDEX_TABLE = "_sys_search_index"
 SEARCH_CACHE_TABLE = "_sys_search_cache"
-FTS_INDEX_VIEW = "_sys_search_index_fts"
 
 
 class IndexMixin(BaseEngine):
@@ -37,8 +36,10 @@ class IndexMixin(BaseEngine):
 
     def _create_search_index_table(self) -> None:
         """创建搜索索引表。"""
+        self.execute_write(f"CREATE SEQUENCE IF NOT EXISTS {SEARCH_INDEX_TABLE}_id_seq START 1")
         self.execute_write(f"""
             CREATE TABLE IF NOT EXISTS {SEARCH_INDEX_TABLE} (
+                id BIGINT PRIMARY KEY DEFAULT nextval('{SEARCH_INDEX_TABLE}_id_seq'),
                 source_table VARCHAR NOT NULL,
                 source_id BIGINT NOT NULL,
                 source_field VARCHAR NOT NULL,
@@ -48,7 +49,7 @@ class IndexMixin(BaseEngine):
                 vector FLOAT[],
                 content_hash VARCHAR,
                 created_at TIMESTAMP,
-                PRIMARY KEY (source_table, source_id, source_field, chunk_seq)
+                UNIQUE (source_table, source_id, source_field, chunk_seq)
             )
         """)
         logger.debug(f"Created table: {SEARCH_INDEX_TABLE}")
@@ -69,25 +70,15 @@ class IndexMixin(BaseEngine):
     def _create_fts_index(self) -> None:
         """为搜索索引表创建 FTS 索引。
 
-        创建 FTS 表和索引。如果索引已存在则跳过。
+        使用 fts_content（分词后的内容）建立全文索引。
+        DuckDB FTS 按空格分词，中文需要先分词才能正确搜索。
         """
         try:
-            self.execute_write("PRAGMA drop_fts_index('_sys_search_index_fts')")
+            self.execute_write(f"PRAGMA drop_fts_index('{SEARCH_INDEX_TABLE}')")
         except Exception:
             pass
 
-        self.execute_write(f"DROP TABLE IF EXISTS {FTS_INDEX_VIEW}")
-
-        self.execute_write(f"""
-            CREATE TABLE {FTS_INDEX_VIEW} AS
-            SELECT 
-                source_table || '_' || source_id || '_' || source_field || '_' || chunk_seq as doc_id,
-                content
-            FROM {SEARCH_INDEX_TABLE}
-            WHERE content IS NOT NULL
-        """)
-
-        self.execute_write(f"PRAGMA create_fts_index('{FTS_INDEX_VIEW}', 'doc_id', 'content')")
+        self.execute_write(f"PRAGMA create_fts_index('{SEARCH_INDEX_TABLE}', 'id', 'fts_content')")
         logger.info("FTS index created successfully")
 
     def rebuild_fts_index(self) -> None:
@@ -96,6 +87,24 @@ class IndexMixin(BaseEngine):
         在数据导入后调用，确保 FTS 索引与数据同步。
         """
         self._create_fts_index()
+
+    def _try_create_fts_index(self) -> None:
+        """尝试创建 FTS 索引。
+
+        检查 _sys_search_index 表是否有分词内容，如果有则创建 FTS 索引。
+        """
+        try:
+            result = self.execute_read(
+                f"SELECT COUNT(*) FROM {SEARCH_INDEX_TABLE} WHERE fts_content IS NOT NULL"
+            )
+            count = result[0][0] if result else 0
+            if count > 0:
+                self._create_fts_index()
+                logger.info(f"FTS index created for {count} documents")
+            else:
+                logger.debug("No fts_content in search index, skipping FTS index creation")
+        except Exception as e:
+            logger.warning(f"Failed to create FTS index: {e}")
 
     async def build_index(
         self,
@@ -353,13 +362,23 @@ class IndexMixin(BaseEngine):
         raise NotImplementedError("EmbeddingMixin not available")
 
     def _insert_index_entries(self, entries: list[tuple]) -> None:
-        """插入索引条目。"""
+        """插入索引条目。
+
+        使用 UPSERT 语义：如果复合键冲突则更新，否则插入。
+        ID 列自动生成，不需要手动指定。
+        """
         with self.write_transaction() as conn:
             conn.executemany(
-                f"INSERT OR REPLACE INTO {SEARCH_INDEX_TABLE} "
+                f"INSERT INTO {SEARCH_INDEX_TABLE} "
                 "(source_table, source_id, source_field, chunk_seq, content, "
                 "fts_content, vector, content_hash, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (source_table, source_id, source_field, chunk_seq) "
+                "DO UPDATE SET content = excluded.content, "
+                "fts_content = excluded.fts_content, "
+                "vector = excluded.vector, "
+                "content_hash = excluded.content_hash, "
+                "created_at = excluded.created_at",
                 entries,
             )
 

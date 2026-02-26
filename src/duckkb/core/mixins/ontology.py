@@ -27,7 +27,9 @@ JSON_SCHEMA_TYPE_MAP = {
 }
 
 SYSTEM_TABLES_DDL = {
-    "_sys_search_index": """CREATE TABLE IF NOT EXISTS _sys_search_index (
+    "_sys_search_index": """CREATE SEQUENCE IF NOT EXISTS _sys_search_index_id_seq START 1;
+CREATE TABLE IF NOT EXISTS _sys_search_index (
+    id BIGINT PRIMARY KEY DEFAULT nextval('_sys_search_index_id_seq'),
     source_table VARCHAR NOT NULL,
     source_id BIGINT NOT NULL,
     source_field VARCHAR NOT NULL,
@@ -37,7 +39,7 @@ SYSTEM_TABLES_DDL = {
     vector FLOAT[],
     content_hash VARCHAR,
     created_at TIMESTAMP,
-    PRIMARY KEY (source_table, source_id, source_field, chunk_seq)
+    UNIQUE (source_table, source_id, source_field, chunk_seq)
 );""",
     "_sys_search_cache": """CREATE TABLE IF NOT EXISTS _sys_search_cache (
     content_hash VARCHAR PRIMARY KEY,

@@ -13,7 +13,6 @@ from duckkb.exceptions import DatabaseError
 from duckkb.logger import logger
 
 SEARCH_INDEX_TABLE = "_sys_search_index"
-FTS_INDEX_VIEW = "_sys_search_index_fts"
 
 
 class SearchMixin(BaseEngine):
@@ -132,6 +131,7 @@ class SearchMixin(BaseEngine):
             WITH
             vector_search AS (
                 SELECT 
+                    id,
                     source_table,
                     source_id,
                     source_field,
@@ -145,22 +145,23 @@ class SearchMixin(BaseEngine):
             ),
             fts_search AS (
                 SELECT 
-                    s.source_table,
-                    s.source_id,
-                    s.source_field,
-                    s.chunk_seq,
-                    fts_main_{FTS_INDEX_VIEW}.match_bm25(f.doc_id, ?) as score,
-                    rank() OVER (ORDER BY fts_main_{FTS_INDEX_VIEW}.match_bm25(f.doc_id, ?) DESC) as rnk
-                FROM {FTS_INDEX_VIEW} f
-                JOIN {SEARCH_INDEX_TABLE} s 
-                  ON f.doc_id = s.source_table || '_' || s.source_id || '_' || s.source_field || '_' || s.chunk_seq
-                WHERE fts_main_{FTS_INDEX_VIEW}.match_bm25(f.doc_id, ?) IS NOT NULL
-                {table_filter}
+                    id,
+                    source_table,
+                    source_id,
+                    source_field,
+                    chunk_seq,
+                    fts_main_{SEARCH_INDEX_TABLE}.match_bm25(id, ?) as score,
+                    rank() OVER (ORDER BY fts_main_{SEARCH_INDEX_TABLE}.match_bm25(id, ?) DESC) as rnk
+                FROM {SEARCH_INDEX_TABLE}
+                WHERE fts_content IS NOT NULL
+                  AND fts_main_{SEARCH_INDEX_TABLE}.match_bm25(id, ?) IS NOT NULL
+                {table_filter.replace("s.", "")}
                 ORDER BY score DESC
                 LIMIT {prefetch_limit}
             ),
             rrf_scores AS (
                 SELECT 
+                    COALESCE(v.id, f.id) as id,
                     COALESCE(v.source_table, f.source_table) as source_table,
                     COALESCE(v.source_id, f.source_id) as source_id,
                     COALESCE(v.source_field, f.source_field) as source_field,
@@ -169,18 +170,12 @@ class SearchMixin(BaseEngine):
                     + COALESCE(1.0 / ({self._rrf_k} + f.rnk), 0.0) * {1 - alpha} as rrf_score
                 FROM vector_search v
                 FULL OUTER JOIN fts_search f 
-                  ON v.source_table = f.source_table 
-                 AND v.source_id = f.source_id 
-                 AND v.source_field = f.source_field
-                 AND v.chunk_seq = f.chunk_seq
+                  ON v.id = f.id
             )
             SELECT r.*, i.content
             FROM rrf_scores r
             JOIN {SEARCH_INDEX_TABLE} i 
-              ON r.source_table = i.source_table 
-             AND r.source_id = i.source_id 
-             AND r.source_field = i.source_field 
-             AND r.chunk_seq = i.chunk_seq
+              ON r.id = i.id
             ORDER BY rrf_score DESC
             LIMIT {limit}
             """
@@ -270,17 +265,16 @@ class SearchMixin(BaseEngine):
             node_def = self.ontology.nodes.get(node_type)
             if node_def is None:
                 raise ValueError(f"Unknown node type: {node_type}")
-            table_filter = "AND s.source_table = ?"
+            table_filter = "AND source_table = ?"
             params.append(node_def.table)
 
         sql = f"""
         SELECT 
-            s.source_table, s.source_id, s.source_field, s.chunk_seq, s.content,
-            fts_main_{FTS_INDEX_VIEW}.match_bm25(f.doc_id, ?) as score
-        FROM {FTS_INDEX_VIEW} f
-        JOIN {SEARCH_INDEX_TABLE} s 
-          ON f.doc_id = s.source_table || '_' || s.source_id || '_' || s.source_field || '_' || s.chunk_seq
-        WHERE fts_main_{FTS_INDEX_VIEW}.match_bm25(f.doc_id, ?) IS NOT NULL
+            source_table, source_id, source_field, chunk_seq, content,
+            fts_main_{SEARCH_INDEX_TABLE}.match_bm25(id, ?) as score
+        FROM {SEARCH_INDEX_TABLE}
+        WHERE fts_content IS NOT NULL
+          AND fts_main_{SEARCH_INDEX_TABLE}.match_bm25(id, ?) IS NOT NULL
         {table_filter}
         ORDER BY score DESC
         LIMIT ?
