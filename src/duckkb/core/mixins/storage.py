@@ -31,7 +31,7 @@ class StorageMixin(BaseEngine):
     """存储能力 Mixin。
 
     提供 SQL 驱动的数据加载和导出。
-    依赖 conn (DBMixin) 和 ontology (OntologyMixin)。
+    依赖 execute_read/write (DBMixin) 和 ontology (OntologyMixin)。
 
     导出时按 identity 字段排序，确保 Git Diff 有效。
     目录结构符合设计文档：
@@ -71,25 +71,22 @@ class StorageMixin(BaseEngine):
         staging_table = f"_staging_{table_name}"
 
         def _execute_load() -> int:
-            try:
-                self.conn.begin()
+            with self.write_transaction() as conn:
+                conn.execute(f"DROP TABLE IF EXISTS {staging_table}")
 
-                self.conn.execute(f"DROP TABLE IF EXISTS {staging_table}")
-
-                self.conn.execute(
+                conn.execute(
                     f"CREATE TEMP TABLE {staging_table} AS "
                     f"SELECT * FROM read_json_auto('{path_pattern}', union_by_name=true)"
                 )
 
-                count_result = self.conn.execute(f"SELECT COUNT(*) FROM {staging_table}").fetchone()
+                count_result = conn.execute(f"SELECT COUNT(*) FROM {staging_table}").fetchone()
                 record_count = count_result[0] if count_result else 0
 
                 if record_count == 0:
                     logger.warning(f"No records loaded from {path_pattern}")
-                    self.conn.rollback()
                     return 0
 
-                rows_needing_id = self.conn.execute(
+                rows_needing_id = conn.execute(
                     f"SELECT rowid, {', '.join(identity_fields)} FROM {staging_table} WHERE __id IS NULL"
                 ).fetchall()
 
@@ -97,25 +94,19 @@ class StorageMixin(BaseEngine):
                     rowid = row[0]
                     identity_values = list(row[1:])
                     determined_id = compute_deterministic_id(identity_values)
-                    self.conn.execute(
+                    conn.execute(
                         f"UPDATE {staging_table} SET __id = ? WHERE rowid = ?",
                         [determined_id, rowid],
                     )
 
-                self.conn.execute(
+                conn.execute(
                     f"INSERT OR REPLACE INTO {table_name} SELECT * FROM {staging_table}"
                 )
 
-                self.conn.execute(f"DROP TABLE {staging_table}")
+                conn.execute(f"DROP TABLE {staging_table}")
 
-                self.conn.commit()
                 logger.info(f"Loaded {record_count} records into {table_name}")
                 return record_count
-
-            except Exception as e:
-                self.conn.rollback()
-                logger.error(f"Failed to load table {table_name}: {e}")
-                raise
 
         return await asyncio.to_thread(_execute_load)
 
@@ -144,8 +135,8 @@ class StorageMixin(BaseEngine):
         await asyncio.to_thread(output_dir.mkdir, parents=True, exist_ok=True)
 
         def _execute_dump() -> int:
-            count_row = self.conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()
-            record_count = count_row[0] if count_row else 0
+            count_row = self.execute_read(f"SELECT COUNT(*) FROM {table_name}")
+            record_count = count_row[0][0] if count_row else 0
 
             if record_count == 0:
                 logger.warning(f"No records to dump from {table_name}")
@@ -174,10 +165,10 @@ class StorageMixin(BaseEngine):
 
         目录结构：{output_dir}/{YYYYMMDD}/part_0.jsonl
         """
-        rows = self.conn.execute(
+        rows = self.execute_read(
             f"SELECT DISTINCT strftime(__updated_at, '%Y%m%d') as date_part "
             f"FROM {table_name} ORDER BY date_part"
-        ).fetchall()
+        )
 
         for (date_part,) in rows:
             date_dir = output_dir / date_part
@@ -186,7 +177,7 @@ class StorageMixin(BaseEngine):
             temp_file = date_dir / "_temp.jsonl"
             final_file = date_dir / "part_0.jsonl"
 
-            self.conn.execute(
+            self.execute_write(
                 f"COPY ("
                 f"  SELECT * FROM {table_name} "
                 f"  WHERE strftime(__updated_at, '%Y%m%d') = '{date_part}' "
@@ -206,7 +197,7 @@ class StorageMixin(BaseEngine):
         temp_file = output_dir / "_temp.jsonl"
         final_file = output_dir / f"{table_name}.jsonl"
 
-        self.conn.execute(
+        self.execute_write(
             f"COPY ("
             f"  SELECT * FROM {table_name} "
             f"  ORDER BY {identity_field}"

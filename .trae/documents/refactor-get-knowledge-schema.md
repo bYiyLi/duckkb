@@ -123,12 +123,12 @@ graph LR
 ### 需要修改的文件
 
 1. `src/duckkb/core/mixins/ontology.py`
-   - 新增 `get_knowledge_intro()` 方法，返回 Markdown 字符串
+   - 新增 `get_info()` 方法，返回 Markdown 字符串
    - 新增 `_format_relationship_table()` 方法 - 生成关系详情表格
    - 新增 `_generate_mermaid_knowledge_graph()` 方法 - 展示知识图谱语义关系
 
 2. `src/duckkb/mcp/duck_mcp.py`
-   - 重命名工具 `get_knowledge_schema` → `get_knowledge_intro`
+   - 重命名工具 `get_knowledge_schema` → `get_info`
    - 重命名工具 `import_knowledge_bundle` → `import`
    - 更新工具描述
 
@@ -144,7 +144,7 @@ graph LR
    - 更新测试用例
 
 6. `tests/test_ontology.py`
-   - 新增 `get_knowledge_intro` 测试
+   - 新增 `get_info` 测试
 
 ## 实现细节
 
@@ -236,7 +236,7 @@ graph LR
 ### 6. 完整 Markdown 生成
 
 ````python
-def get_knowledge_intro(self) -> str:
+def get_info(self) -> str:
     """生成知识库介绍的 Markdown 文档。"""
     sections = [
         "# 知识库介绍\n",
@@ -256,7 +256,7 @@ def get_knowledge_intro(self) -> str:
 
 ## 任务列表
 
-1. [ ] 在 `ontology.py` 中实现 `get_knowledge_intro()` 方法
+1. [ ] 在 `ontology.py` 中实现 `get_info()` 方法
 2. [ ] 实现 `_format_usage_instructions()` 方法
 3. [ ] 实现 `_format_import_schema_as_markdown()` 方法
 4. [ ] 实现 `_format_node_tables_as_markdown()` 方法

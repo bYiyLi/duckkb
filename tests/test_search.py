@@ -50,5 +50,5 @@ class TestQueryRawSql:
     @pytest.mark.asyncio
     async def test_query_raw_sql_count(self, async_engine):
         """测试 COUNT 查询。"""
-        results = async_engine._execute_query("SELECT 1 as count")
+        results = async_engine.execute_read("SELECT 1 as count")
         assert len(results) == 1

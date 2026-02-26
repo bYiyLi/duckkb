@@ -324,44 +324,44 @@ class TestOntologyMixin:
         assert engine._json_type_to_duckdb({"type": "string", "format": "date"}) == "DATE"
         assert engine._json_type_to_duckdb({"type": "string", "format": "time"}) == "TIME"
 
-    def test_get_knowledge_intro(self, engine):
+    def test_get_info(self, engine):
         """测试获取知识库介绍。"""
-        result = engine.get_knowledge_intro()
+        result = engine.get_info()
         assert "# 知识库介绍" in result
         assert "## 使用说明" in result
         assert "## 导入数据格式" in result
         assert "## 表结构" in result
         assert "## 知识图谱关系" in result
 
-    def test_get_knowledge_intro_contains_node_tables(self, engine):
+    def test_get_info_contains_node_tables(self, engine):
         """测试知识库介绍包含节点表。"""
-        result = engine.get_knowledge_intro()
+        result = engine.get_info()
         assert "### 节点表" in result
         assert "Character (characters)" in result
 
-    def test_get_knowledge_intro_contains_edge_tables(self, engine):
+    def test_get_info_contains_edge_tables(self, engine):
         """测试知识库介绍包含边表。"""
-        result = engine.get_knowledge_intro()
+        result = engine.get_info()
         assert "### 边表" in result
         assert "edge_knows" in result
 
-    def test_get_knowledge_intro_contains_system_tables(self, engine):
+    def test_get_info_contains_system_tables(self, engine):
         """测试知识库介绍包含系统表。"""
-        result = engine.get_knowledge_intro()
+        result = engine.get_info()
         assert "### 系统表" in result
         assert "_sys_search_index" in result
         assert "_sys_search_cache" in result
 
-    def test_get_knowledge_intro_contains_relationship_table(self, engine):
+    def test_get_info_contains_relationship_table(self, engine):
         """测试知识库介绍包含关系表格。"""
-        result = engine.get_knowledge_intro()
+        result = engine.get_info()
         assert "### 关系详情" in result
         assert "| 边名称 |" in result
         assert "| knows |" in result
 
-    def test_get_knowledge_intro_contains_mermaid_graph(self, engine):
+    def test_get_info_contains_mermaid_graph(self, engine):
         """测试知识库介绍包含 Mermaid 图。"""
-        result = engine.get_knowledge_intro()
+        result = engine.get_info()
         assert "```mermaid" in result
         assert "graph LR" in result
         assert "Character" in result

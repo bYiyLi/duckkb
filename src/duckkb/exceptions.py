@@ -51,3 +51,35 @@ class InvalidTableNameError(ConfigurationError):
         self.table_name = table_name
         self.reason = reason
         super().__init__(f"Invalid table name '{table_name}': {reason}")
+
+
+class GraphError(DuckKBError):
+    """图谱操作异常基类。
+
+    所有图谱相关异常的基类。
+    """
+
+    pass
+
+
+class NodeNotFoundError(GraphError):
+    """节点不存在异常。
+
+    当查询的节点在数据库中不存在时抛出。
+    """
+
+    def __init__(self, node_type: str, node_id: int | str):
+        self.node_type = node_type
+        self.node_id = node_id
+        super().__init__(f"Node not found: type={node_type}, id={node_id}")
+
+
+class InvalidDirectionError(GraphError):
+    """无效遍历方向异常。
+
+    当遍历方向参数不是有效值时抛出。
+    """
+
+    def __init__(self, direction: str):
+        self.direction = direction
+        super().__init__(f"Invalid direction: {direction}. Must be one of: out, in, both")

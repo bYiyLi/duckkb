@@ -21,13 +21,13 @@ class TestEngineInit:
         from duckkb.core.engine import Engine
 
         with Engine(test_kb_path) as engine:
-            assert engine.conn is not None
+            assert engine.db_path is not None
 
     def test_engine_close(self, engine):
         """测试引擎关闭。"""
-        assert engine._conn is not None
+        assert engine._db_path is not None
         engine.close()
-        assert engine._conn is None
+        assert engine._db_path is None
 
     def test_engine_properties(self, engine):
         """测试引擎属性。"""
@@ -52,9 +52,9 @@ class TestEngineSchema:
 
     def test_sync_schema(self, engine):
         """测试同步 Schema。"""
-        tables = engine.conn.execute(
+        tables = engine.execute_read(
             "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
-        ).fetchall()
+        )
         table_names = [t[0] for t in tables]
 
         assert "characters" in table_names
@@ -66,9 +66,9 @@ class TestEngineSchema:
 
     def test_create_index_tables(self, engine):
         """测试创建索引表。"""
-        tables = engine.conn.execute(
+        tables = engine.execute_read(
             "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
-        ).fetchall()
+        )
         table_names = [t[0] for t in tables]
 
         assert "_sys_search_index" in table_names

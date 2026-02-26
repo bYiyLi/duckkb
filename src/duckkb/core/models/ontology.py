@@ -325,6 +325,20 @@ class SearchConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class EdgeIndexConfig(BaseModel):
+    """边索引配置。
+
+    定义边表的索引配置，用于优化图查询性能。
+
+    Attributes:
+        from_indexed: 是否为 __from_id 创建索引，默认 True。
+        to_indexed: 是否为 __to_id 创建索引，默认 True。
+    """
+
+    from_indexed: bool = True
+    to_indexed: bool = True
+
+
 class NodeType(BaseModel):
     """节点类型定义。
 
@@ -410,12 +424,14 @@ class EdgeType(BaseModel):
         to: 目标节点类型。
         cardinality: 基数（1:1, 1:N, N:1, N:N）。
         json_schema: 边属性定义（JSON Schema Draft 7）。
+        index: 边索引配置。
     """
 
     from_: str = Field(alias="from")
     to: str
     cardinality: str | None = None
     json_schema: dict[str, Any] | None = Field(default=None, alias="schema")
+    index: EdgeIndexConfig | None = None
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     @field_validator("cardinality")

@@ -50,9 +50,9 @@ class TestImportNodes:
 
         assert result["status"] == "success"
 
-        row = async_engine.conn.execute(
+        row = async_engine.execute_read(
             "SELECT bio FROM characters WHERE name = ?", ["张明"]
-        ).fetchone()
+        )[0]
         assert row is not None
         assert row[0] == "更新后的简介"
 

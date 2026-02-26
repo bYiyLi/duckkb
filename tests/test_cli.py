@@ -32,9 +32,9 @@ class TestCLICommands:
 class TestGetKnowledgeIntro:
     """获取知识库介绍测试。"""
 
-    def test_get_knowledge_intro(self, default_kb_path):
+    def test_get_info(self, default_kb_path):
         """测试获取知识库介绍。"""
-        result = runner.invoke(app, ["-k", str(default_kb_path), "get-knowledge-intro"])
+        result = runner.invoke(app, ["-k", str(default_kb_path), "info"])
 
         assert result.exit_code == 0
         assert "# 知识库介绍" in result.stdout

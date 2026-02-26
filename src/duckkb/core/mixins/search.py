@@ -181,7 +181,7 @@ class SearchMixin(BaseEngine):
         fts_params = [query] + params
 
         try:
-            rows = await asyncio.to_thread(self._execute_query, sql, fts_params)
+            rows = await asyncio.to_thread(self.execute_read, sql, fts_params)
             return self._process_results(rows)
         except Exception as e:
             logger.error(f"Hybrid search failed: {e}")
@@ -231,7 +231,7 @@ class SearchMixin(BaseEngine):
         """
 
         try:
-            rows = await asyncio.to_thread(self._execute_query, sql, params)
+            rows = await asyncio.to_thread(self.execute_read, sql, params)
             return self._process_results(rows)
         except Exception as e:
             logger.error(f"Vector search failed: {e}")
@@ -278,7 +278,7 @@ class SearchMixin(BaseEngine):
         """
 
         try:
-            rows = await asyncio.to_thread(self._execute_query, sql, params)
+            rows = await asyncio.to_thread(self.execute_read, sql, params)
             return self._process_results(rows)
         except Exception as e:
             logger.error(f"FTS search failed: {e}")
@@ -301,15 +301,11 @@ class SearchMixin(BaseEngine):
         validate_table_name(source_table)
 
         def _fetch() -> dict[str, Any] | None:
-            row = self.conn.execute(
-                f"SELECT * FROM {source_table} WHERE __id = ?",
-                [source_id],
-            ).fetchone()
-            if not row:
+            rows = self.execute_read(f"SELECT * FROM {source_table} WHERE __id = ?", [source_id])
+            if not rows:
                 return None
-
-            cursor = self.conn.execute(f"SELECT * FROM {source_table} LIMIT 0")
-            columns = [desc[0] for desc in cursor.description] if cursor.description else []
+            row = rows[0]
+            columns = self._get_table_columns(source_table)
             return dict(zip(columns, row, strict=True))
 
         return await asyncio.to_thread(_fetch)
@@ -317,7 +313,7 @@ class SearchMixin(BaseEngine):
     async def query_raw_sql(self, sql: str) -> list[dict[str, Any]]:
         """安全执行原始 SQL 查询。
 
-        使用 DuckDB 原生只读模式保护，自动拒绝所有写操作。
+        使用只读连接执行，自动拒绝所有写操作。
         自动添加 LIMIT 限制，防止返回过多数据。
 
         Args:
@@ -350,48 +346,32 @@ class SearchMixin(BaseEngine):
             ValueError: 结果集大小超限。
             duckdb.Error: SQL 执行失败或包含写操作。
         """
-        mode_result = self.conn.execute("SELECT current_setting('access_mode')").fetchone()
-        current_mode = mode_result[0] if mode_result else "automatic"
+        rows = self.execute_read(sql)
+        if not rows:
+            return []
 
-        try:
-            self.conn.execute("SET access_mode='read_only'")
+        columns = self._extract_columns_from_sql(sql)
+        result = [dict(zip(columns, row, strict=True)) for row in rows]
 
-            cursor = self.conn.execute(sql)
-            if not cursor.description:
-                return []
-            columns = [desc[0] for desc in cursor.description]
-            rows = cursor.fetchall()
+        json_bytes = orjson.dumps(result)
+        if len(json_bytes) > QUERY_RESULT_SIZE_LIMIT:
+            raise ValueError(
+                f"Result set size exceeds {QUERY_RESULT_SIZE_LIMIT // (1024 * 1024)}MB limit."
+            )
 
-            result = [dict(zip(columns, row, strict=True)) for row in rows]
-
-            json_bytes = orjson.dumps(result)
-            if len(json_bytes) > QUERY_RESULT_SIZE_LIMIT:
-                raise ValueError(
-                    f"Result set size exceeds {QUERY_RESULT_SIZE_LIMIT // (1024 * 1024)}MB limit."
-                )
-
-            return result
-        finally:
-            self.conn.execute(f"SET access_mode='{current_mode}'")
+        return result
 
     def _format_vector_literal(self, vector: list[float]) -> str:
         """格式化向量为 SQL 字面量。"""
         values = ", ".join(str(v) for v in vector)
         return f"[{values}]"
 
-    def _execute_query(self, sql: str, params: list[Any] | None = None) -> list[Any]:
-        """执行 SQL 查询。"""
-        if params:
-            return self.conn.execute(sql, params).fetchall()
-        return self.conn.execute(sql).fetchall()
-
     def _process_results(self, rows: list[Any]) -> list[dict[str, Any]]:
         """处理原始数据库行为结构化结果。"""
         if not rows:
             return []
 
-        cursor = self.conn.execute("SELECT * FROM (SELECT 1 LIMIT 0)")
-        columns = [desc[0] for desc in cursor.description] if cursor.description else []
+        columns = ["source_table", "source_id", "source_field", "chunk_seq", "content", "score"]
 
         results = []
         for row in rows:
@@ -404,3 +384,47 @@ class SearchMixin(BaseEngine):
             results.append(row_dict)
 
         return results
+
+    def _get_table_columns(self, table_name: str) -> list[str]:
+        """获取表的列名列表。
+
+        Args:
+            table_name: 表名。
+
+        Returns:
+            列名列表。
+        """
+        rows = self.execute_read(f"SELECT column_name FROM information_schema.columns WHERE table_name = '{table_name}' ORDER BY ordinal_position")
+        return [row[0] for row in rows]
+
+    def _extract_columns_from_sql(self, sql: str) -> list[str]:
+        """从 SQL 中提取列名。
+
+        Args:
+            sql: SQL 查询语句。
+
+        Returns:
+            列名列表。
+        """
+        sql_upper = sql.upper()
+        select_idx = sql_upper.find("SELECT")
+        from_idx = sql_upper.find("FROM")
+
+        if select_idx == -1 or from_idx == -1:
+            return [f"col_{i}" for i in range(100)]
+
+        select_part = sql[select_idx + 6:from_idx].strip()
+
+        if select_part == "*":
+            return [f"col_{i}" for i in range(100)]
+
+        columns = []
+        for col in select_part.split(","):
+            col = col.strip()
+            if " AS " in col.upper():
+                col = col.split()[-1]
+            elif "." in col:
+                col = col.split(".")[-1]
+            columns.append(col)
+
+        return columns

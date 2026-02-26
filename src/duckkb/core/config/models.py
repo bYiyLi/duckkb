@@ -4,8 +4,42 @@
 """
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
+
+
+class DatabaseConfig(BaseModel):
+    """数据库配置模型。
+
+    定义数据库连接相关配置项。
+
+    Attributes:
+        mode: 数据库模式，file（文件）或 memory（内存）。
+        temp_dir: 临时文件目录，None 表示使用系统默认临时目录。
+        keep_temp_on_exit: 退出时是否保留临时文件（用于调试）。
+    """
+
+    mode: Literal["memory", "file"] = "file"
+    temp_dir: Path | None = None
+    keep_temp_on_exit: bool = False
+
+    @field_validator("temp_dir", mode="before")
+    @classmethod
+    def validate_temp_dir(cls, v: str | Path | None) -> Path | None:
+        """验证并转换临时目录路径。
+
+        Args:
+            v: 待验证的路径值。
+
+        Returns:
+            转换后的 Path 对象或 None。
+        """
+        if v is None:
+            return None
+        if isinstance(v, str):
+            return Path(v)
+        return v
 
 
 class StorageConfig(BaseModel):
@@ -61,11 +95,13 @@ class CoreConfig(BaseModel):
     Attributes:
         storage: 存储配置实例。
         global_config: 全局配置实例。
+        database: 数据库配置实例。
         embedding_dim: 嵌入向量维度，默认为 1536。
     """
 
     storage: StorageConfig
     global_config: GlobalConfig = Field(default_factory=GlobalConfig)
+    database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     embedding_dim: int = Field(default=1536, ge=1, le=4096)
 
     @field_validator("embedding_dim")

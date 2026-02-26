@@ -95,9 +95,9 @@ class TestEmbeddingCache:
 
             await async_engine.import_knowledge_bundle(str(yaml_file))
 
-            row = async_engine.conn.execute(
+            row = async_engine.execute_read(
                 "SELECT COUNT(*) FROM _sys_search_cache",
-            ).fetchone()
+            )[0]
 
             assert row[0] >= 0
 

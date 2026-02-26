@@ -9,6 +9,7 @@ from duckkb.core.mixins import (
     ConfigMixin,
     DBMixin,
     EmbeddingMixin,
+    GraphMixin,
     ImportMixin,
     IndexMixin,
     OntologyMixin,
@@ -29,6 +30,7 @@ class Engine(
     EmbeddingMixin,
     IndexMixin,
     SearchMixin,
+    GraphMixin,
     ImportMixin,
 ):
     """知识库引擎。
@@ -47,7 +49,8 @@ class Engine(
     7. EmbeddingMixin - 向量嵌入
     8. IndexMixin - 搜索索引
     9. SearchMixin - 混合检索
-    10. ImportMixin - 知识导入
+    10. GraphMixin - 知识图谱检索
+    11. ImportMixin - 知识导入
 
     Attributes:
         kb_path: 知识库根目录。
@@ -143,7 +146,11 @@ class Engine(
                 if count > 0:
                     loaded_nodes += count
             except Exception as e:
-                logger.warning(f"Failed to load node type {node_type}: {e}")
+                error_msg = str(e)
+                if "No files found" in error_msg:
+                    logger.debug(f"No data files for node type {node_type}")
+                else:
+                    logger.warning(f"Failed to load node type {node_type}: {e}")
 
         for edge_name in self.ontology.edges.keys():
             try:
@@ -151,7 +158,11 @@ class Engine(
                 if count > 0:
                     loaded_edges += count
             except Exception as e:
-                logger.warning(f"Failed to load edge type {edge_name}: {e}")
+                error_msg = str(e)
+                if "No files found" in error_msg:
+                    logger.debug(f"No data files for edge type {edge_name}")
+                else:
+                    logger.warning(f"Failed to load edge type {edge_name}: {e}")
 
         cache_path = data_dir / "cache" / "search_cache.parquet"
         if cache_path.exists():

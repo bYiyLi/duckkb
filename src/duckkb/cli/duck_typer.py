@@ -120,10 +120,11 @@ class DuckTyper(typer.Typer):
         """注册 CLI 命令。"""
         self._register_serve_command()
         self._register_version_command()
-        self._register_knowledge_intro_command()
+        self._register_info_command()
         self._register_import_command()
         self._register_search_commands()
         self._register_query_raw_sql_command()
+        self._register_graph_commands()
 
     def _register_serve_command(self) -> None:
         """注册 serve 命令。"""
@@ -145,12 +146,12 @@ class DuckTyper(typer.Typer):
             """显示版本信息。"""
             typer.echo(f"DuckKB v{__version__}")
 
-    def _register_knowledge_intro_command(self) -> None:
-        """注册 get-knowledge-intro 命令。"""
+    def _register_info_command(self) -> None:
+        """注册 info 命令。"""
 
-        @self.command("get-knowledge-intro")
-        def get_knowledge_intro() -> None:
-            """获取知识库介绍。
+        @self.command("info")
+        def info() -> None:
+            """获取知识库信息。
 
             返回知识库的完整介绍文档（Markdown 格式），包含：
             - 使用说明
@@ -159,7 +160,7 @@ class DuckTyper(typer.Typer):
             - 知识图谱关系
             """
             with Engine(self.kb_path) as engine:
-                result = engine.get_knowledge_intro()
+                result = engine.get_info()
             typer.echo(result)
 
     def _register_import_command(self) -> None:
@@ -364,6 +365,296 @@ class DuckTyper(typer.Typer):
 
             result = _run_async(_query())
             typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
+
+    def _register_graph_commands(self) -> None:
+        """注册图谱检索相关命令。"""
+        self._register_get_neighbors_command()
+        self._register_graph_search_command()
+        self._register_traverse_command()
+        self._register_extract_subgraph_command()
+        self._register_find_paths_command()
+
+    def _register_get_neighbors_command(self) -> None:
+        """注册 get-neighbors 命令。"""
+
+        @self.command("get-neighbors")
+        def get_neighbors(
+            node_type: str = typer.Argument(..., help="节点类型名称"),
+            node_id: str = typer.Argument(..., help="节点 ID 或 identity 字段值"),
+            edge_types: str | None = typer.Option(
+                None,
+                "--edge-types",
+                "-e",
+                help="边类型过滤列表，逗号分隔",
+            ),
+            direction: str = typer.Option(
+                "both",
+                "--direction",
+                "-d",
+                help="遍历方向：out, in, both",
+            ),
+            limit: int = typer.Option(100, "--limit", "-l", help="返回数量限制"),
+        ) -> None:
+            """获取节点的邻居节点。
+
+            查询指定节点的直接关联节点，支持按边类型和方向过滤。
+            """
+            parsed_node_id: int | str
+            try:
+                parsed_node_id = int(node_id)
+            except ValueError:
+                parsed_node_id = node_id
+
+            async def _execute() -> dict[str, Any]:
+                engine = Engine(self.kb_path)
+                try:
+                    await engine.async_initialize()
+                    return await engine.get_neighbors(
+                        node_type=node_type,
+                        node_id=parsed_node_id,
+                        edge_types=[e.strip() for e in edge_types.split(",")]
+                        if edge_types
+                        else None,
+                        direction=direction,
+                        limit=limit,
+                    )
+                finally:
+                    engine.close()
+
+            result = _run_async(_execute())
+            typer.echo(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+
+    def _register_graph_search_command(self) -> None:
+        """注册 graph-search 命令。"""
+
+        @self.command("graph-search")
+        def graph_search(
+            query: str = typer.Argument(..., help="查询文本"),
+            node_type: str | None = typer.Option(
+                None,
+                "--node-type",
+                "-t",
+                help="种子节点类型过滤",
+            ),
+            edge_types: str | None = typer.Option(
+                None,
+                "--edge-types",
+                "-e",
+                help="遍历边类型过滤，逗号分隔",
+            ),
+            direction: str = typer.Option(
+                "both",
+                "--direction",
+                "-d",
+                help="图遍历方向：out, in, both",
+            ),
+            traverse_depth: int = typer.Option(
+                1,
+                "--traverse-depth",
+                "--depth",
+                help="图遍历深度",
+            ),
+            search_limit: int = typer.Option(
+                5,
+                "--search-limit",
+                help="向量检索返回的种子节点数",
+            ),
+            neighbor_limit: int = typer.Option(
+                10,
+                "--neighbor-limit",
+                help="每个种子节点的邻居数限制",
+            ),
+            alpha: float = typer.Option(
+                0.5,
+                "--alpha",
+                "-a",
+                help="向量搜索权重 (0.0-1.0)",
+            ),
+        ) -> None:
+            """向量检索 + 图遍历融合检索。
+
+            结合语义检索和图谱遍历，返回语义相关节点及其关联上下文。
+            """
+
+            async def _execute() -> list[dict[str, Any]]:
+                engine = Engine(self.kb_path)
+                try:
+                    await engine.async_initialize()
+                    return await engine.graph_search(
+                        query=query,
+                        node_type=node_type,
+                        edge_types=[e.strip() for e in edge_types.split(",")]
+                        if edge_types
+                        else None,
+                        direction=direction,
+                        traverse_depth=traverse_depth,
+                        search_limit=search_limit,
+                        neighbor_limit=neighbor_limit,
+                        alpha=alpha,
+                    )
+                finally:
+                    engine.close()
+
+            result = _run_async(_execute())
+            typer.echo(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+
+    def _register_traverse_command(self) -> None:
+        """注册 traverse 命令。"""
+
+        @self.command()
+        def traverse(
+            node_type: str = typer.Argument(..., help="起始节点类型"),
+            node_id: str = typer.Argument(..., help="起始节点 ID"),
+            edge_types: str | None = typer.Option(
+                None,
+                "--edge-types",
+                "-e",
+                help="允许的边类型，逗号分隔",
+            ),
+            direction: str = typer.Option(
+                "out",
+                "--direction",
+                "-d",
+                help="遍历方向：out, in, both",
+            ),
+            max_depth: int = typer.Option(3, "--max-depth", help="最大遍历深度"),
+            limit: int = typer.Option(1000, "--limit", "-l", help="返回结果限制"),
+            no_paths: bool = typer.Option(
+                False,
+                "--no-paths",
+                help="仅返回节点列表（不返回路径）",
+            ),
+        ) -> None:
+            """多跳图遍历。
+
+            沿指定边类型进行多跳遍历，返回所有可达节点及其路径信息。
+            """
+            parsed_node_id: int | str
+            try:
+                parsed_node_id = int(node_id)
+            except ValueError:
+                parsed_node_id = node_id
+
+            async def _execute() -> list[dict[str, Any]]:
+                engine = Engine(self.kb_path)
+                try:
+                    await engine.async_initialize()
+                    return await engine.traverse(
+                        node_type=node_type,
+                        node_id=parsed_node_id,
+                        edge_types=[e.strip() for e in edge_types.split(",")]
+                        if edge_types
+                        else None,
+                        direction=direction,
+                        max_depth=max_depth,
+                        limit=limit,
+                        return_paths=not no_paths,
+                    )
+                finally:
+                    engine.close()
+
+            result = _run_async(_execute())
+            typer.echo(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+
+    def _register_extract_subgraph_command(self) -> None:
+        """注册 extract-subgraph 命令。"""
+
+        @self.command("extract-subgraph")
+        def extract_subgraph(
+            node_type: str = typer.Argument(..., help="中心节点类型"),
+            node_id: str = typer.Argument(..., help="中心节点 ID"),
+            edge_types: str | None = typer.Option(
+                None,
+                "--edge-types",
+                "-e",
+                help="包含的边类型，逗号分隔",
+            ),
+            max_depth: int = typer.Option(2, "--max-depth", help="扩展深度"),
+            node_limit: int = typer.Option(100, "--node-limit", help="节点数量上限"),
+            edge_limit: int = typer.Option(200, "--edge-limit", help="边数量上限"),
+        ) -> None:
+            """提取子图。
+
+            以指定节点为中心，提取指定深度范围内的完整子图。
+            """
+            parsed_node_id: int | str
+            try:
+                parsed_node_id = int(node_id)
+            except ValueError:
+                parsed_node_id = node_id
+
+            async def _execute() -> dict[str, Any]:
+                engine = Engine(self.kb_path)
+                try:
+                    await engine.async_initialize()
+                    return await engine.extract_subgraph(
+                        node_type=node_type,
+                        node_id=parsed_node_id,
+                        edge_types=[e.strip() for e in edge_types.split(",")]
+                        if edge_types
+                        else None,
+                        max_depth=max_depth,
+                        node_limit=node_limit,
+                        edge_limit=edge_limit,
+                    )
+                finally:
+                    engine.close()
+
+            result = _run_async(_execute())
+            typer.echo(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+
+    def _register_find_paths_command(self) -> None:
+        """注册 find-paths 命令。"""
+
+        @self.command("find-paths")
+        def find_paths(
+            from_type: str = typer.Argument(..., help="起始节点类型"),
+            from_id: str = typer.Argument(..., help="起始节点 ID"),
+            to_type: str = typer.Argument(..., help="目标节点类型"),
+            to_id: str = typer.Argument(..., help="目标节点 ID"),
+            edge_types: str | None = typer.Option(
+                None,
+                "--edge-types",
+                "-e",
+                help="允许的边类型，逗号分隔",
+            ),
+            max_depth: int = typer.Option(5, "--max-depth", help="最大路径长度"),
+            limit: int = typer.Option(10, "--limit", "-l", help="返回路径数量"),
+        ) -> None:
+            """查找两节点间的路径。
+
+            查找两个节点之间的所有路径（最短路径优先）。
+            """
+            parsed_from_id: int | str
+            try:
+                parsed_from_id = int(from_id)
+            except ValueError:
+                parsed_from_id = from_id
+
+            parsed_to_id: int | str
+            try:
+                parsed_to_id = int(to_id)
+            except ValueError:
+                parsed_to_id = to_id
+
+            async def _execute() -> list[dict[str, Any]]:
+                engine = Engine(self.kb_path)
+                try:
+                    await engine.async_initialize()
+                    return await engine.find_paths(
+                        from_node=(from_type, parsed_from_id),
+                        to_node=(to_type, parsed_to_id),
+                        edge_types=[e.strip() for e in edge_types.split(",")]
+                        if edge_types
+                        else None,
+                        max_depth=max_depth,
+                        limit=limit,
+                    )
+                finally:
+                    engine.close()
+
+            result = _run_async(_execute())
+            typer.echo(json.dumps(result, ensure_ascii=False, indent=2, default=str))
 
     def create_mcp(self, **kwargs: Any) -> DuckMCP:
         """创建 MCP 服务实例。

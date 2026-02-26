@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 from duckkb.core.base import BaseEngine
-from duckkb.core.models.ontology import EdgeType, NodeType, Ontology
+from duckkb.core.models.ontology import EdgeIndexConfig, EdgeType, NodeType, Ontology
 from duckkb.logger import logger
 
 JSON_TO_DUCKDB_TYPE_MAP = {
@@ -78,13 +78,13 @@ class OntologyMixin(BaseEngine):
         for _node_name, node_type in self.ontology.nodes.items():
             ddl = self._generate_node_ddl(node_type)
             logger.debug(f"Creating node table: {node_type.table}")
-            self.conn.execute(ddl)
+            self.execute_write(ddl)
 
         for edge_name, edge_type in self.ontology.edges.items():
             table_name = f"edge_{edge_name}"
             ddl = self._generate_edge_ddl(edge_name, edge_type)
             logger.debug(f"Creating edge table: {table_name}")
-            self.conn.execute(ddl)
+            self.execute_write(ddl)
 
         logger.info(
             f"Schema synced: {len(self.ontology.nodes)} nodes, {len(self.ontology.edges)} edges"
@@ -119,7 +119,6 @@ class OntologyMixin(BaseEngine):
         - __id BIGINT PRIMARY KEY (主键)
         - __created_at TIMESTAMP (创建时间)
         - __updated_at TIMESTAMP (更新时间)
-        - __date DATE (分区日期字段，从 __updated_at 派生)
         - 其他字段根据 json_schema 推断
 
         Args:
@@ -132,7 +131,6 @@ class OntologyMixin(BaseEngine):
             "    __id BIGINT PRIMARY KEY",
             "    __created_at TIMESTAMP",
             "    __updated_at TIMESTAMP",
-            "    __date DATE GENERATED ALWAYS AS (CAST(__updated_at AS DATE)) VIRTUAL",
         ]
 
         schema = node_type.json_schema
@@ -153,7 +151,6 @@ class OntologyMixin(BaseEngine):
         - __to_id BIGINT (目标节点ID)
         - __created_at TIMESTAMP (创建时间)
         - __updated_at TIMESTAMP (更新时间)
-        - __date DATE (分区日期字段，从 __updated_at 派生)
         - 其他字段根据 json_schema 推断
 
         Args:
@@ -161,7 +158,7 @@ class OntologyMixin(BaseEngine):
             edge_type: 边类型定义。
 
         Returns:
-            CREATE TABLE IF NOT EXISTS 语句。
+            CREATE TABLE IF NOT EXISTS 语句及索引语句。
         """
         table_name = f"edge_{edge_name}"
         columns = [
@@ -170,7 +167,6 @@ class OntologyMixin(BaseEngine):
             "    __to_id BIGINT NOT NULL",
             "    __created_at TIMESTAMP",
             "    __updated_at TIMESTAMP",
-            "    __date DATE GENERATED ALWAYS AS (CAST(__updated_at AS DATE)) VIRTUAL",
         ]
 
         schema = edge_type.json_schema
@@ -180,7 +176,23 @@ class OntologyMixin(BaseEngine):
                 columns.append(f"    {prop_name} {col_type}")
 
         columns_str = ",\n".join(columns)
-        return f"CREATE TABLE IF NOT EXISTS {table_name} (\n{columns_str}\n);"
+        ddl = f"CREATE TABLE IF NOT EXISTS {table_name} (\n{columns_str}\n);"
+
+        index_config = edge_type.index or EdgeIndexConfig()
+        index_statements = []
+        if index_config.from_indexed:
+            index_statements.append(
+                f"CREATE INDEX IF NOT EXISTS idx_{table_name}_from ON {table_name}(__from_id);"
+            )
+        if index_config.to_indexed:
+            index_statements.append(
+                f"CREATE INDEX IF NOT EXISTS idx_{table_name}_to ON {table_name}(__to_id);"
+            )
+
+        if index_statements:
+            ddl = ddl + "\n" + "\n".join(index_statements)
+
+        return ddl
 
     def get_bundle_schema(self) -> dict[str, Any]:
         """生成知识包的完整校验 Schema。
@@ -358,13 +370,13 @@ class OntologyMixin(BaseEngine):
 
         return "\n".join(lines)
 
-    def get_knowledge_intro(self) -> str:
-        """生成知识库介绍的 Markdown 文档。
+    def get_info(self) -> str:
+        """生成知识库信息的 Markdown 文档。
 
-        返回包含使用说明、导入格式、表结构和知识图谱关系的完整介绍。
+        返回包含使用说明、导入格式、表结构和知识图谱关系的完整信息。
 
         Returns:
-            Markdown 格式的知识库介绍文档。
+            Markdown 格式的知识库信息文档。
         """
         sections = [
             "# 知识库介绍\n",

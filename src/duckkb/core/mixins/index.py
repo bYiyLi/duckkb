@@ -36,7 +36,7 @@ class IndexMixin(BaseEngine):
 
     def _create_search_index_table(self) -> None:
         """创建搜索索引表。"""
-        self.conn.execute(f"""
+        self.execute_write(f"""
             CREATE TABLE IF NOT EXISTS {SEARCH_INDEX_TABLE} (
                 source_table VARCHAR NOT NULL,
                 source_id BIGINT NOT NULL,
@@ -54,7 +54,7 @@ class IndexMixin(BaseEngine):
 
     def _create_search_cache_table(self) -> None:
         """创建搜索缓存表。"""
-        self.conn.execute(f"""
+        self.execute_write(f"""
             CREATE TABLE IF NOT EXISTS {SEARCH_CACHE_TABLE} (
                 content_hash VARCHAR PRIMARY KEY,
                 fts_content VARCHAR,
@@ -127,7 +127,7 @@ class IndexMixin(BaseEngine):
 
         def _fetch_records() -> list[tuple]:
             fields_str = ", ".join(all_fields)
-            return self.conn.execute(f"SELECT __id, {fields_str} FROM {table_name}").fetchall()
+            return self.execute_read(f"SELECT __id, {fields_str} FROM {table_name}")
 
         records = await asyncio.to_thread(_fetch_records)
         indexed = 0
@@ -238,11 +238,11 @@ class IndexMixin(BaseEngine):
         """
 
         def _get_cached() -> str | None:
-            row = self.conn.execute(
+            rows = self.execute_read(
                 f"SELECT fts_content FROM {SEARCH_CACHE_TABLE} WHERE content_hash = ?",
                 [content_hash],
-            ).fetchone()
-            return row[0] if row else None
+            )
+            return rows[0][0] if rows else None
 
         cached = await asyncio.to_thread(_get_cached)
         if cached:
@@ -252,7 +252,7 @@ class IndexMixin(BaseEngine):
 
         def _cache_it() -> None:
             now = datetime.now(UTC)
-            self.conn.execute(
+            self.execute_write(
                 f"INSERT OR REPLACE INTO {SEARCH_CACHE_TABLE} "
                 "(content_hash, fts_content, last_used, created_at) VALUES (?, ?, ?, ?)",
                 [content_hash, fts_content, now, now],
@@ -280,11 +280,11 @@ class IndexMixin(BaseEngine):
         """
 
         def _get_cached() -> list[float] | None:
-            row = self.conn.execute(
+            rows = self.execute_read(
                 f"SELECT vector FROM {SEARCH_CACHE_TABLE} WHERE content_hash = ?",
                 [content_hash],
-            ).fetchone()
-            return row[0] if row else None
+            )
+            return rows[0][0] if rows else None
 
         cached = await asyncio.to_thread(_get_cached)
         if cached:
@@ -296,7 +296,7 @@ class IndexMixin(BaseEngine):
 
                 def _cache_it(v: list[float] = vector) -> None:
                     now = datetime.now(UTC)
-                    self.conn.execute(
+                    self.execute_write(
                         f"INSERT OR REPLACE INTO {SEARCH_CACHE_TABLE} "
                         "(content_hash, vector, last_used, created_at) VALUES (?, ?, ?, ?)",
                         [content_hash, v, now, now],
@@ -329,13 +329,14 @@ class IndexMixin(BaseEngine):
 
     def _insert_index_entries(self, entries: list[tuple]) -> None:
         """插入索引条目。"""
-        self.conn.executemany(
-            f"INSERT OR REPLACE INTO {SEARCH_INDEX_TABLE} "
-            "(source_table, source_id, source_field, chunk_seq, content, "
-            "fts_content, vector, content_hash, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            entries,
-        )
+        with self.write_transaction() as conn:
+            conn.executemany(
+                f"INSERT OR REPLACE INTO {SEARCH_INDEX_TABLE} "
+                "(source_table, source_id, source_field, chunk_seq, content, "
+                "fts_content, vector, content_hash, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                entries,
+            )
 
     async def rebuild_index(self, node_type: str) -> int:
         """重建指定节点类型的索引。
@@ -353,7 +354,7 @@ class IndexMixin(BaseEngine):
         table_name = node_def.table
 
         def _delete_old() -> None:
-            self.conn.execute(
+            self.execute_write(
                 f"DELETE FROM {SEARCH_INDEX_TABLE} WHERE source_table = ?",
                 [table_name],
             )
@@ -375,13 +376,13 @@ class IndexMixin(BaseEngine):
             return 0
 
         def _load() -> int:
-            self.conn.execute(
+            self.execute_write(
                 f"INSERT OR REPLACE INTO {SEARCH_CACHE_TABLE} "
                 f"SELECT content_hash, fts_content, vector, last_used, created_at "
                 f"FROM read_parquet('{path}')"
             )
-            row = self.conn.execute(f"SELECT COUNT(*) FROM {SEARCH_CACHE_TABLE}").fetchone()
-            return row[0] if row else 0
+            rows = self.execute_read(f"SELECT COUNT(*) FROM {SEARCH_CACHE_TABLE}")
+            return rows[0][0] if rows else 0
 
         count = await asyncio.to_thread(_load)
         logger.info(f"Loaded {count} cache entries from {path}")
@@ -399,10 +400,10 @@ class IndexMixin(BaseEngine):
         path.parent.mkdir(parents=True, exist_ok=True)
 
         def _save() -> int:
-            row = self.conn.execute(f"SELECT COUNT(*) FROM {SEARCH_CACHE_TABLE}").fetchone()
-            count = row[0] if row else 0
+            rows = self.execute_read(f"SELECT COUNT(*) FROM {SEARCH_CACHE_TABLE}")
+            count = rows[0][0] if rows else 0
 
-            self.conn.execute(f"COPY {SEARCH_CACHE_TABLE} TO '{path}' (FORMAT PARQUET)")
+            self.execute_write(f"COPY {SEARCH_CACHE_TABLE} TO '{path}' (FORMAT PARQUET)")
             return count
 
         count = await asyncio.to_thread(_save)
@@ -420,12 +421,11 @@ class IndexMixin(BaseEngine):
         """
 
         def _clean() -> int:
-            result = self.conn.execute(
+            rows = self.execute_write_with_result(
                 f"DELETE FROM {SEARCH_CACHE_TABLE} "
                 f"WHERE last_used < current_timestamp - INTERVAL {expire_days} DAY"
             )
-            row = result.fetchone()
-            return row[0] if row else 0
+            return len(rows) if rows else 0
 
         deleted = await asyncio.to_thread(_clean)
         logger.info(f"Cleaned {deleted} expired cache entries")

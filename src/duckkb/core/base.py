@@ -4,8 +4,6 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import duckdb
-
 if TYPE_CHECKING:
     from duckkb.config import KBConfig
     from duckkb.core.config import CoreConfig
@@ -45,12 +43,6 @@ class BaseEngine(ABC):
     @abstractmethod
     def kb_config(self) -> "KBConfig":
         """知识库配置对象。"""
-        ...
-
-    @property
-    @abstractmethod
-    def conn(self) -> duckdb.DuckDBPyConnection:
-        """数据库连接。"""
         ...
 
     @property

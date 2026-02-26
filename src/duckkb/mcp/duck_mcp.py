@@ -118,24 +118,29 @@ class DuckMCP(Engine, FastMCP):
         self._register_fts_search_tool()
         self._register_get_source_record_tool()
         self._register_query_raw_sql_tool()
+        self._register_get_neighbors_tool()
+        self._register_graph_search_tool()
+        self._register_traverse_tool()
+        self._register_extract_subgraph_tool()
+        self._register_find_paths_tool()
 
     def _register_knowledge_intro_tool(self) -> None:
-        """注册 get_knowledge_intro 工具。"""
+        """注册 get_info 工具。"""
 
-        @self.tool()
-        def get_knowledge_intro() -> str:
-            """获取知识库介绍。
+        @self.tool(name="info")
+        def info() -> str:
+            """获取知识库信息。
 
-            返回知识库的完整介绍文档（Markdown 格式），包含：
+            返回知识库的完整信息文档（Markdown 格式），包含：
             - 使用说明：知识库的用途和操作指南
             - 导入数据格式：JSON Schema 和 YAML 示例
             - 表结构：节点表、边表和系统表的 DDL
             - 知识图谱关系：关系详情表格和 Mermaid 图
 
             Returns:
-                Markdown 格式的知识库介绍文档。
+                Markdown 格式的知识库信息文档。
             """
-            return self.get_knowledge_intro()
+            return self.get_info()
 
     def _register_import_tool(self) -> None:
         """注册 import 工具。"""
@@ -147,10 +152,10 @@ class DuckMCP(Engine, FastMCP):
             从 YAML 文件导入数据到知识库。文件格式为数组，每个元素包含：
             - type: 实体类型（节点类型或边类型名称）
             - action: 操作类型（upsert/delete），默认 upsert
-            - 节点：identity 字段（根据 get_knowledge_intro 返回的 Schema）
+            - 节点：identity 字段（根据 get_info 返回的 Schema）
             - 边：source 和 target 对象
 
-            导入前会使用 get_knowledge_intro 返回的 Schema 进行完整校验。
+            导入前会使用 get_info 返回的 Schema 进行完整校验。
             校验失败会返回精确的错误位置，便于修复。
 
             导入后自动触发：
@@ -178,7 +183,7 @@ class DuckMCP(Engine, FastMCP):
     def _register_query_raw_sql_tool(self) -> None:
         """注册 query_raw_sql 工具。"""
 
-        @self.tool()
+        @self.tool(name="query_raw_sql")
         async def query_raw_sql(sql: str) -> str:
             """执行只读 SQL 查询。
 
@@ -323,3 +328,196 @@ class DuckMCP(Engine, FastMCP):
                 source_id=source_id,
             )
             return json.dumps(result, ensure_ascii=False, indent=2)
+
+    def _register_get_neighbors_tool(self) -> None:
+        """注册 get_neighbors 工具。"""
+
+        @self.tool()
+        async def get_neighbors(
+            node_type: str,
+            node_id: int | str,
+            edge_types: list[str] | None = None,
+            direction: str = "both",
+            limit: int = 100,
+        ) -> str:
+            """获取节点的邻居节点。
+
+            查询指定节点的直接关联节点，支持按边类型和方向过滤。
+
+            Args:
+                node_type: 节点类型名称（如 "Character"）。
+                node_id: 节点 ID 或 identity 字段值。
+                edge_types: 边类型过滤列表，如 ["friend_of", "located_at"]。
+                direction: 遍历方向，"out"（出边）、"in"（入边）、"both"（双向）。
+                limit: 每种边类型返回的最大邻居数。
+
+            Returns:
+                JSON 格式的邻居信息，包含节点详情和边属性。
+            """
+            result = await self.get_neighbors(
+                node_type=node_type,
+                node_id=node_id,
+                edge_types=edge_types,
+                direction=direction,
+                limit=limit,
+            )
+            return json.dumps(result, ensure_ascii=False, indent=2, default=str)
+
+    def _register_graph_search_tool(self) -> None:
+        """注册 graph_search 工具。"""
+
+        @self.tool()
+        async def graph_search(
+            query: str,
+            node_type: str | None = None,
+            edge_types: list[str] | None = None,
+            direction: str = "both",
+            traverse_depth: int = 1,
+            search_limit: int = 5,
+            neighbor_limit: int = 10,
+            alpha: float = 0.5,
+        ) -> str:
+            """向量检索 + 图遍历融合检索。
+
+            结合语义检索和图谱遍历，返回语义相关节点及其关联上下文。
+            流程：向量检索找到种子节点 -> 图遍历扩展关联信息。
+
+            Args:
+                query: 查询文本。
+                node_type: 种子节点类型过滤（可选）。
+                edge_types: 遍历边类型过滤（可选）。
+                direction: 图遍历方向，"out"、"in"、"both"。
+                traverse_depth: 图遍历深度，默认 1。
+                search_limit: 向量检索返回的种子节点数，默认 5。
+                neighbor_limit: 每个种子节点的邻居数限制，默认 10。
+                alpha: 向量搜索权重（0.0-1.0），默认 0.5。
+
+            Returns:
+                JSON 格式的结果列表，包含种子节点和上下文信息。
+            """
+            result = await self.graph_search(
+                query=query,
+                node_type=node_type,
+                edge_types=edge_types,
+                direction=direction,
+                traverse_depth=traverse_depth,
+                search_limit=search_limit,
+                neighbor_limit=neighbor_limit,
+                alpha=alpha,
+            )
+            return json.dumps(result, ensure_ascii=False, indent=2, default=str)
+
+    def _register_traverse_tool(self) -> None:
+        """注册 traverse 工具。"""
+
+        @self.tool()
+        async def traverse(
+            node_type: str,
+            node_id: int | str,
+            edge_types: list[str] | None = None,
+            direction: str = "out",
+            max_depth: int = 3,
+            limit: int = 1000,
+            return_paths: bool = True,
+        ) -> str:
+            """多跳图遍历。
+
+            沿指定边类型进行多跳遍历，返回所有可达节点及其路径信息。
+
+            Args:
+                node_type: 起始节点类型名称。
+                node_id: 起始节点 ID 或 identity 字段值。
+                edge_types: 允许的边类型列表（可选）。
+                direction: 遍历方向，"out"、"in"、"both"。
+                max_depth: 最大遍历深度，默认 3。
+                limit: 返回结果数量限制，默认 1000。
+                return_paths: 是否返回完整路径信息，默认 True。
+
+            Returns:
+                JSON 格式的遍历结果列表。
+            """
+            result = await self.traverse(
+                node_type=node_type,
+                node_id=node_id,
+                edge_types=edge_types,
+                direction=direction,
+                max_depth=max_depth,
+                limit=limit,
+                return_paths=return_paths,
+            )
+            return json.dumps(result, ensure_ascii=False, indent=2, default=str)
+
+    def _register_extract_subgraph_tool(self) -> None:
+        """注册 extract_subgraph 工具。"""
+
+        @self.tool()
+        async def extract_subgraph(
+            node_type: str,
+            node_id: int | str,
+            edge_types: list[str] | None = None,
+            max_depth: int = 2,
+            node_limit: int = 100,
+            edge_limit: int = 200,
+        ) -> str:
+            """提取子图。
+
+            以指定节点为中心，提取指定深度范围内的完整子图。
+
+            Args:
+                node_type: 中心节点类型名称。
+                node_id: 中心节点 ID 或 identity 值。
+                edge_types: 包含的边类型列表（可选）。
+                max_depth: 扩展深度，默认 2。
+                node_limit: 节点数量上限，默认 100。
+                edge_limit: 边数量上限，默认 200。
+
+            Returns:
+                JSON 格式的子图信息，包含中心节点、节点列表、边列表和统计信息。
+            """
+            result = await self.extract_subgraph(
+                node_type=node_type,
+                node_id=node_id,
+                edge_types=edge_types,
+                max_depth=max_depth,
+                node_limit=node_limit,
+                edge_limit=edge_limit,
+            )
+            return json.dumps(result, ensure_ascii=False, indent=2, default=str)
+
+    def _register_find_paths_tool(self) -> None:
+        """注册 find_paths 工具。"""
+
+        @self.tool()
+        async def find_paths(
+            from_node_type: str,
+            from_node_id: int | str,
+            to_node_type: str,
+            to_node_id: int | str,
+            edge_types: list[str] | None = None,
+            max_depth: int = 5,
+            limit: int = 10,
+        ) -> str:
+            """查找两节点间的路径。
+
+            查找两个节点之间的所有路径（最短路径优先）。
+
+            Args:
+                from_node_type: 起始节点类型名称。
+                from_node_id: 起始节点 ID 或 identity 值。
+                to_node_type: 目标节点类型名称。
+                to_node_id: 目标节点 ID 或 identity 值。
+                edge_types: 允许的边类型列表（可选）。
+                max_depth: 最大路径长度（边数），默认 5。
+                limit: 返回路径数量限制，默认 10。
+
+            Returns:
+                JSON 格式的路径列表，按路径长度排序。
+            """
+            result = await self.find_paths(
+                from_node=(from_node_type, from_node_id),
+                to_node=(to_node_type, to_node_id),
+                edge_types=edge_types,
+                max_depth=max_depth,
+                limit=limit,
+            )
+            return json.dumps(result, ensure_ascii=False, indent=2, default=str)

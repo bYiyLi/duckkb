@@ -172,12 +172,13 @@ class ImportMixin(BaseEngine):
         """
         await asyncio.to_thread(os.unlink, path)
 
-    def _node_exists_in_transaction(self, table_name: str, node_id: int) -> bool:
+    def _node_exists_in_transaction(self, conn: Any, table_name: str, node_id: int) -> bool:
         """在事务内检查节点是否存在。
 
         包括已提交和未提交的数据。
 
         Args:
+            conn: 数据库连接。
             table_name: 节点表名。
             node_id: 节点 ID。
 
@@ -185,7 +186,7 @@ class ImportMixin(BaseEngine):
             节点存在返回 True，否则返回 False。
         """
         validate_table_name(table_name)
-        result = self.conn.execute(
+        result = conn.execute(
             f"SELECT 1 FROM {table_name} WHERE __id = ? LIMIT 1",
             [node_id],
         ).fetchone()
@@ -193,6 +194,7 @@ class ImportMixin(BaseEngine):
 
     def _validate_edge_references(
         self,
+        conn: Any,
         edge_type: str,
         items: list[dict[str, Any]],
     ) -> None:
@@ -202,6 +204,7 @@ class ImportMixin(BaseEngine):
         （包括同一事务中刚插入的数据）。
 
         Args:
+            conn: 数据库连接。
             edge_type: 边类型名称。
             items: 边数据列表。
 
@@ -225,7 +228,7 @@ class ImportMixin(BaseEngine):
             source_identity = [source.get(f) for f in source_node_def.identity]
             source_id = compute_deterministic_id(source_identity)
 
-            if not self._node_exists_in_transaction(source_node_def.table, source_id):
+            if not self._node_exists_in_transaction(conn, source_node_def.table, source_id):
                 raise ValueError(
                     f"[{idx}] Cannot create '{edge_type}' relation: "
                     f"Source '{edge_def.from_}' with identity {source} not found."
@@ -234,7 +237,7 @@ class ImportMixin(BaseEngine):
             target_identity = [target.get(f) for f in target_node_def.identity]
             target_id = compute_deterministic_id(target_identity)
 
-            if not self._node_exists_in_transaction(target_node_def.table, target_id):
+            if not self._node_exists_in_transaction(conn, target_node_def.table, target_id):
                 raise ValueError(
                     f"[{idx}] Cannot create '{edge_type}' relation: "
                     f"Target '{edge_def.to}' with identity {target} not found."
@@ -267,24 +270,21 @@ class ImportMixin(BaseEngine):
         """
 
         def _execute() -> dict[str, Any]:
-            try:
-                self.conn.begin()
-
+            with self.write_transaction() as conn:
                 nodes_result, node_upserted_ids, node_deleted_ids = self._import_nodes_sync(
-                    nodes_data
+                    conn, nodes_data
                 )
-                edges_result = self._import_edges_sync(edges_data)
+                edges_result = self._import_edges_sync(conn, edges_data)
 
                 for edge_type, items in self._group_edges_by_type(edges_data).items():
                     upsert_items = [
                         item for item in items if item.get("action", "upsert") == "upsert"
                     ]
                     if upsert_items:
-                        self._validate_edge_references(edge_type, upsert_items)
+                        self._validate_edge_references(conn, edge_type, upsert_items)
 
-                indexed_result = self._build_index_for_ids_sync(node_upserted_ids)
+                indexed_result = self._build_index_for_ids_sync(conn, node_upserted_ids)
 
-                self.conn.commit()
                 return {
                     "nodes": nodes_result,
                     "edges": edges_result,
@@ -293,19 +293,15 @@ class ImportMixin(BaseEngine):
                     "deleted_ids": node_deleted_ids,
                 }
 
-            except Exception as e:
-                self.conn.rollback()
-                logger.error(f"Transaction rolled back: {e}")
-                raise
-
         return await asyncio.to_thread(_execute)
 
     def _import_nodes_sync(
-        self, data: list[dict[str, Any]]
+        self, conn: Any, data: list[dict[str, Any]]
     ) -> tuple[dict[str, Any], dict[str, list[int]], dict[str, list[int]]]:
         """同步导入节点（在事务内执行）。
 
         Args:
+            conn: 数据库连接。
             data: 节点数据列表。
 
         Returns:
@@ -320,20 +316,21 @@ class ImportMixin(BaseEngine):
 
         for node_type, actions in grouped.items():
             if actions["upsert"]:
-                ids, count = self._upsert_nodes_sync(node_type, actions["upsert"])
+                ids, count = self._upsert_nodes_sync(conn, node_type, actions["upsert"])
                 upserted[node_type] = count
                 upserted_ids[node_type] = ids
             if actions["delete"]:
-                ids, count = self._delete_nodes_sync(node_type, actions["delete"])
+                ids, count = self._delete_nodes_sync(conn, node_type, actions["delete"])
                 deleted[node_type] = count
                 deleted_ids[node_type] = ids
 
         return {"upserted": upserted, "deleted": deleted}, upserted_ids, deleted_ids
 
-    def _import_edges_sync(self, data: list[dict[str, Any]]) -> dict[str, Any]:
+    def _import_edges_sync(self, conn: Any, data: list[dict[str, Any]]) -> dict[str, Any]:
         """同步导入边（在事务内执行）。
 
         Args:
+            conn: 数据库连接。
             data: 边数据列表。
 
         Returns:
@@ -346,10 +343,10 @@ class ImportMixin(BaseEngine):
 
         for edge_type, actions in grouped.items():
             if actions["upsert"]:
-                count = self._upsert_edges_sync(edge_type, actions["upsert"])
+                count = self._upsert_edges_sync(conn, edge_type, actions["upsert"])
                 upserted[edge_type] = count
             if actions["delete"]:
-                count = self._delete_edges_sync(edge_type, actions["delete"])
+                count = self._delete_edges_sync(conn, edge_type, actions["delete"])
                 deleted[edge_type] = count
 
         return {"upserted": upserted, "deleted": deleted}
@@ -400,13 +397,14 @@ class ImportMixin(BaseEngine):
         return result
 
     def _upsert_nodes_sync(
-        self, node_type: str, items: list[dict[str, Any]]
+        self, conn: Any, node_type: str, items: list[dict[str, Any]]
     ) -> tuple[list[int], int]:
         """同步 upsert 节点（批量优化版）。
 
         使用 INSERT ... ON CONFLICT DO UPDATE 语法，保留原始 __created_at。
 
         Args:
+            conn: 数据库连接。
             node_type: 节点类型名称。
             items: 节点数据列表。
 
@@ -449,7 +447,7 @@ class ImportMixin(BaseEngine):
             for c in update_columns
         )
 
-        self.conn.executemany(
+        conn.executemany(
             f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({placeholders}) "
             f"ON CONFLICT (__id) DO UPDATE SET {update_set}",
             batch_params,
@@ -458,13 +456,14 @@ class ImportMixin(BaseEngine):
         return record_ids, len(records)
 
     def _delete_nodes_sync(
-        self, node_type: str, items: list[dict[str, Any]]
+        self, conn: Any, node_type: str, items: list[dict[str, Any]]
     ) -> tuple[list[int], int]:
         """同步删除节点（批量优化版）。
 
         先删除相关的边，再删除节点。
 
         Args:
+            conn: 数据库连接。
             node_type: 节点类型名称。
             items: 节点数据列表。
 
@@ -491,22 +490,23 @@ class ImportMixin(BaseEngine):
         if not record_ids:
             return [], 0
 
-        self._delete_edges_for_nodes(record_ids)
+        self._delete_edges_for_nodes(conn, record_ids)
 
-        self._delete_index_for_ids(table_name, record_ids)
+        self._delete_index_for_ids(conn, table_name, record_ids)
 
         placeholders = ", ".join(["?" for _ in record_ids])
-        self.conn.execute(
+        conn.execute(
             f"DELETE FROM {table_name} WHERE __id IN ({placeholders})",
             record_ids,
         )
 
         return record_ids, len(record_ids)
 
-    def _delete_edges_for_nodes(self, node_ids: list[int]) -> int:
+    def _delete_edges_for_nodes(self, conn: Any, node_ids: list[int]) -> int:
         """删除与指定节点相关的所有边。
 
         Args:
+            conn: 数据库连接。
             node_ids: 节点 ID 列表。
 
         Returns:
@@ -522,55 +522,58 @@ class ImportMixin(BaseEngine):
             table_name = f"edge_{edge_name}"
             validate_table_name(table_name)
 
-            if not self._table_exists(table_name):
+            if not self._table_exists_in_conn(conn, table_name):
                 continue
 
-            count_before = self._get_table_count(table_name)
+            count_before = self._get_table_count_in_conn(conn, table_name)
 
-            self.conn.execute(
+            conn.execute(
                 f"DELETE FROM {table_name} "
                 f"WHERE __from_id IN ({placeholders}) OR __to_id IN ({placeholders})",
                 node_ids + node_ids,
             )
 
-            count_after = self._get_table_count(table_name)
+            count_after = self._get_table_count_in_conn(conn, table_name)
             total_deleted += count_before - count_after
 
         return total_deleted
 
-    def _table_exists(self, table_name: str) -> bool:
+    def _table_exists_in_conn(self, conn: Any, table_name: str) -> bool:
         """检查表是否存在。
 
         Args:
+            conn: 数据库连接。
             table_name: 表名。
 
         Returns:
             表存在返回 True，否则返回 False。
         """
         validate_table_name(table_name)
-        result = self.conn.execute(
+        result = conn.execute(
             "SELECT 1 FROM information_schema.tables WHERE table_name = ? LIMIT 1",
             [table_name],
         ).fetchone()
         return result is not None
 
-    def _get_table_count(self, table_name: str) -> int:
+    def _get_table_count_in_conn(self, conn: Any, table_name: str) -> int:
         """获取表的记录数。
 
         Args:
+            conn: 数据库连接。
             table_name: 表名。
 
         Returns:
             记录数。
         """
         validate_table_name(table_name)
-        result = self.conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()
+        result = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()
         return result[0] if result else 0
 
-    def _delete_index_for_ids(self, table_name: str, record_ids: list[int]) -> int:
+    def _delete_index_for_ids(self, conn: Any, table_name: str, record_ids: list[int]) -> int:
         """删除指定记录的索引条目。
 
         Args:
+            conn: 数据库连接。
             table_name: 表名。
             record_ids: 记录 ID 列表。
 
@@ -582,24 +585,24 @@ class ImportMixin(BaseEngine):
 
         validate_table_name(table_name)
 
-        if not self._table_exists(SEARCH_INDEX_TABLE):
+        if not self._table_exists_in_conn(conn, SEARCH_INDEX_TABLE):
             return 0
 
         placeholders = ", ".join(["?" for _ in record_ids])
 
-        row = self.conn.execute(
+        row = conn.execute(
             f"SELECT COUNT(*) FROM {SEARCH_INDEX_TABLE} WHERE source_table = ?",
             [table_name],
         ).fetchone()
         count_before = row[0] if row else 0
 
-        self.conn.execute(
+        conn.execute(
             f"DELETE FROM {SEARCH_INDEX_TABLE} "
             f"WHERE source_table = ? AND source_id IN ({placeholders})",
             [table_name] + record_ids,
         )
 
-        row = self.conn.execute(
+        row = conn.execute(
             f"SELECT COUNT(*) FROM {SEARCH_INDEX_TABLE} WHERE source_table = ?",
             [table_name],
         ).fetchone()
@@ -607,12 +610,13 @@ class ImportMixin(BaseEngine):
 
         return count_before - count_after
 
-    def _upsert_edges_sync(self, edge_type: str, items: list[dict[str, Any]]) -> int:
+    def _upsert_edges_sync(self, conn: Any, edge_type: str, items: list[dict[str, Any]]) -> int:
         """同步 upsert 边（批量优化版）。
 
         使用 INSERT ... ON CONFLICT DO UPDATE 语法，保留原始 __created_at。
 
         Args:
+            conn: 数据库连接。
             edge_type: 边类型名称。
             items: 边数据列表。
 
@@ -629,7 +633,7 @@ class ImportMixin(BaseEngine):
         table_name = f"edge_{edge_type}"
         validate_table_name(table_name)
 
-        if not self._table_exists(table_name):
+        if not self._table_exists_in_conn(conn, table_name):
             logger.warning(f"Edge table {table_name} does not exist, skipping upsert")
             return 0
 
@@ -679,7 +683,7 @@ class ImportMixin(BaseEngine):
             for c in update_columns
         )
 
-        self.conn.executemany(
+        conn.executemany(
             f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({placeholders}) "
             f"ON CONFLICT (__id) DO UPDATE SET {update_set}",
             batch_params,
@@ -687,10 +691,11 @@ class ImportMixin(BaseEngine):
 
         return len(records)
 
-    def _delete_edges_sync(self, edge_type: str, items: list[dict[str, Any]]) -> int:
+    def _delete_edges_sync(self, conn: Any, edge_type: str, items: list[dict[str, Any]]) -> int:
         """同步删除边（批量优化版）。
 
         Args:
+            conn: 数据库连接。
             edge_type: 边类型名称。
             items: 边数据列表。
 
@@ -707,7 +712,7 @@ class ImportMixin(BaseEngine):
         table_name = f"edge_{edge_type}"
         validate_table_name(table_name)
 
-        if not self._table_exists(table_name):
+        if not self._table_exists_in_conn(conn, table_name):
             return 0
 
         source_node = self.ontology.nodes.get(edge_def.from_)
@@ -732,10 +737,10 @@ class ImportMixin(BaseEngine):
         if not record_ids:
             return 0
 
-        self._delete_index_for_ids(table_name, record_ids)
+        self._delete_index_for_ids(conn, table_name, record_ids)
 
         placeholders = ", ".join(["?" for _ in record_ids])
-        self.conn.execute(
+        conn.execute(
             f"DELETE FROM {table_name} WHERE __id IN ({placeholders})",
             record_ids,
         )
@@ -744,6 +749,7 @@ class ImportMixin(BaseEngine):
 
     def _build_index_for_ids_sync(
         self,
+        conn: Any,
         upserted_ids: dict[str, list[int]],
     ) -> dict[str, int]:
         """在事务内为变更的记录构建索引（增量更新）。
@@ -751,12 +757,13 @@ class ImportMixin(BaseEngine):
         先删除旧索引，再重建，确保 chunk 数量变化时旧索引被清理。
 
         Args:
+            conn: 数据库连接。
             upserted_ids: 新增/更新的记录 ID。
 
         Returns:
             索引统计。
         """
-        if not self._table_exists(SEARCH_INDEX_TABLE):
+        if not self._table_exists_in_conn(conn, SEARCH_INDEX_TABLE):
             create_index_tables = getattr(self, "create_index_tables", None)
             if create_index_tables:
                 create_index_tables()
@@ -772,7 +779,7 @@ class ImportMixin(BaseEngine):
             table_name = node_def.table
             validate_table_name(table_name)
             placeholders = ", ".join(["?" for _ in ids])
-            self.conn.execute(
+            conn.execute(
                 f"DELETE FROM {SEARCH_INDEX_TABLE} WHERE source_table = ? AND source_id IN ({placeholders})",
                 [table_name] + ids,
             )
@@ -803,7 +810,7 @@ class ImportMixin(BaseEngine):
             fields_str = ", ".join(all_fields)
             placeholders = ", ".join(["?" for _ in ids])
 
-            rows = self.conn.execute(
+            rows = conn.execute(
                 f"SELECT __id, {fields_str} FROM {table_name} WHERE __id IN ({placeholders})",
                 ids,
             ).fetchall()
@@ -827,13 +834,13 @@ class ImportMixin(BaseEngine):
 
                         fts_content = None
                         if field_name in fts_fields:
-                            fts_content = self._get_or_compute_fts_sync(chunk, content_hash)
+                            fts_content = self._get_or_compute_fts_sync(conn, chunk, content_hash)
 
                         vector = None
                         if field_name in vector_fields:
-                            vector = self._get_or_compute_vector_sync(chunk, content_hash)
+                            vector = self._get_or_compute_vector_sync(conn, chunk, content_hash)
 
-                        self.conn.execute(
+                        conn.execute(
                             f"INSERT OR REPLACE INTO {SEARCH_INDEX_TABLE} "
                             "(source_table, source_id, source_field, chunk_seq, content, "
                             "fts_content, vector, content_hash, created_at) "
@@ -907,22 +914,23 @@ class ImportMixin(BaseEngine):
         """
         return hashlib.md5(text.encode("utf-8")).hexdigest()
 
-    def _get_or_compute_fts_sync(self, text: str, content_hash: str) -> str:
+    def _get_or_compute_fts_sync(self, conn: Any, text: str, content_hash: str) -> str:
         """获取或计算分词结果（同步版本）。
 
         优先从缓存获取，缓存未命中则计算并存入缓存。
 
         Args:
+            conn: 数据库连接。
             text: 待分词文本。
             content_hash: 文本哈希。
 
         Returns:
             分词结果（空格分隔）。
         """
-        if not self._table_exists(SEARCH_CACHE_TABLE):
+        if not self._table_exists_in_conn(conn, SEARCH_CACHE_TABLE):
             return self._segment_text_sync(text)
 
-        row = self.conn.execute(
+        row = conn.execute(
             f"SELECT fts_content FROM {SEARCH_CACHE_TABLE} WHERE content_hash = ?",
             [content_hash],
         ).fetchone()
@@ -933,7 +941,7 @@ class ImportMixin(BaseEngine):
         fts_content = self._segment_text_sync(text)
 
         now = datetime.now(UTC)
-        self.conn.execute(
+        conn.execute(
             f"INSERT OR REPLACE INTO {SEARCH_CACHE_TABLE} "
             "(content_hash, fts_content, last_used, created_at) VALUES (?, ?, ?, ?)",
             [content_hash, fts_content, now, now],
@@ -941,22 +949,23 @@ class ImportMixin(BaseEngine):
 
         return fts_content
 
-    def _get_or_compute_vector_sync(self, text: str, content_hash: str) -> list[float] | None:
+    def _get_or_compute_vector_sync(self, conn: Any, text: str, content_hash: str) -> list[float] | None:
         """获取或计算向量嵌入（同步版本）。
 
         优先从缓存获取，缓存未命中则返回 None（向量化需要异步 API）。
 
         Args:
+            conn: 数据库连接。
             text: 待向量化文本。
             content_hash: 文本哈希。
 
         Returns:
             向量嵌入，如果无法同步计算则返回 None。
         """
-        if not self._table_exists(SEARCH_CACHE_TABLE):
+        if not self._table_exists_in_conn(conn, SEARCH_CACHE_TABLE):
             return None
 
-        row = self.conn.execute(
+        row = conn.execute(
             f"SELECT vector FROM {SEARCH_CACHE_TABLE} WHERE content_hash = ?",
             [content_hash],
         ).fetchone()
@@ -1091,10 +1100,10 @@ class ImportMixin(BaseEngine):
             记录列表。
         """
         validate_table_name(table_name)
-        return self.conn.execute(
+        return self.execute_read(
             f"SELECT __id, {fields_str} FROM {table_name} WHERE __id IN ({placeholders})",
             ids,
-        ).fetchall()
+        )
 
     def _check_vector_cache(self, content_hash: str) -> list[float] | None:
         """检查向量缓存。
@@ -1105,11 +1114,11 @@ class ImportMixin(BaseEngine):
         Returns:
             缓存的向量，如果不存在则返回 None。
         """
-        row = self.conn.execute(
+        rows = self.execute_read(
             f"SELECT vector FROM {SEARCH_CACHE_TABLE} WHERE content_hash = ?",
             [content_hash],
-        ).fetchone()
-        return row[0] if row else None
+        )
+        return rows[0][0] if rows else None
 
     def _save_vector_to_cache(
         self,
@@ -1135,26 +1144,18 @@ class ImportMixin(BaseEngine):
         validate_table_name(table_name)
         now = datetime.now(UTC)
 
-        try:
-            self.conn.begin()
-
-            self.conn.execute(
+        with self.write_transaction() as conn:
+            conn.execute(
                 f"INSERT OR REPLACE INTO {SEARCH_CACHE_TABLE} "
                 "(content_hash, vector, last_used, created_at) VALUES (?, ?, ?, ?)",
                 [content_hash, vector, now, now],
             )
-            self.conn.execute(
+            conn.execute(
                 f"UPDATE {SEARCH_INDEX_TABLE} SET vector = ? "
                 f"WHERE source_table = ? AND source_id = ? AND "
                 f"source_field = ? AND chunk_seq = ?",
                 [vector, table_name, source_id, field_name, chunk_seq],
             )
-
-            self.conn.commit()
-        except Exception as e:
-            self.conn.rollback()
-            logger.error(f"Failed to save vector to cache: {e}")
-            raise
 
     async def _dump_to_shadow_dir(
         self,
@@ -1232,8 +1233,8 @@ class ImportMixin(BaseEngine):
         await asyncio.to_thread(output_dir.mkdir, parents=True, exist_ok=True)
 
         def _execute_dump() -> int:
-            count_row = self.conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()
-            record_count = count_row[0] if count_row else 0
+            rows = self.execute_read(f"SELECT COUNT(*) FROM {table_name}")
+            record_count = rows[0][0] if rows else 0
 
             if record_count == 0:
                 return 0
@@ -1241,7 +1242,7 @@ class ImportMixin(BaseEngine):
             temp_file = output_dir / "_temp.jsonl"
             final_file = output_dir / "part_0.jsonl"
 
-            self.conn.execute(
+            self.execute_write(
                 f"COPY ("
                 f"  SELECT * FROM {table_name} "
                 f"  ORDER BY {identity_field}"
@@ -1267,13 +1268,13 @@ class ImportMixin(BaseEngine):
         cache_path = cache_dir / "search_cache.parquet"
 
         def _execute_dump() -> int:
-            row = self.conn.execute(f"SELECT COUNT(*) FROM {SEARCH_CACHE_TABLE}").fetchone()
-            count = row[0] if row else 0
+            rows = self.execute_read(f"SELECT COUNT(*) FROM {SEARCH_CACHE_TABLE}")
+            count = rows[0][0] if rows else 0
 
             if count == 0:
                 return 0
 
-            self.conn.execute(f"COPY {SEARCH_CACHE_TABLE} TO '{cache_path}' (FORMAT PARQUET)")
+            self.execute_write(f"COPY {SEARCH_CACHE_TABLE} TO '{cache_path}' (FORMAT PARQUET)")
             return count
 
         return await asyncio.to_thread(_execute_dump)

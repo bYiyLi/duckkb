@@ -30,7 +30,7 @@ class TestMCPTools:
     """MCP 工具测试。"""
 
     @pytest.mark.asyncio
-    async def test_get_knowledge_intro_tool(self, test_kb_path):
+    async def test_get_info_tool(self, test_kb_path):
         """测试获取知识库介绍工具。"""
         from duckkb.mcp.duck_mcp import DuckMCP
 
@@ -38,7 +38,7 @@ class TestMCPTools:
         await mcp.async_initialize()
 
         try:
-            result = mcp.get_knowledge_intro()
+            result = mcp.get_info()
             assert "# 知识库介绍" in result
             assert "## 使用说明" in result
             assert "## 导入数据格式" in result
@@ -81,7 +81,7 @@ class TestMCPLifespan:
         mcp = DuckMCP(test_kb_path)
         await mcp.async_initialize()
 
-        assert mcp._conn is not None
+        assert mcp._engine is not None
 
         mcp.close()
 
@@ -95,4 +95,4 @@ class TestMCPLifespan:
 
         mcp.close()
 
-        assert mcp._conn is None
+        assert mcp._engine is None
