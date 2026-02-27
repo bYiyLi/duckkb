@@ -68,16 +68,16 @@ class TestConcurrentReadWrite:
   name: 并发读写测试
   bio: 测试并发读写功能
 """
-        yaml_file = tmp_path / "rw_test.yaml"
-        yaml_file.write_text(yaml_content, encoding="utf-8")
 
-        async def write_task():
+        async def write_task(i: int):
+            yaml_file = tmp_path / f"rw_test_{i}.yaml"
+            yaml_file.write_text(yaml_content, encoding="utf-8")
             return await async_engine.import_knowledge_bundle(str(yaml_file))
 
         def read_task():
             return async_engine.execute_read("SELECT COUNT(*) FROM characters")
 
-        write_tasks = [write_task() for _ in range(2)]
+        write_tasks = [write_task(i) for i in range(2)]
         read_tasks = [asyncio.to_thread(read_task) for _ in range(3)]
         results = await asyncio.gather(*write_tasks, *read_tasks, return_exceptions=True)
 
@@ -175,17 +175,17 @@ class TestLockBehavior:
   name: 锁测试角色
   bio: 测试导入锁
 """
-        yaml_file = tmp_path / "lock_test.yaml"
-        yaml_file.write_text(yaml_content, encoding="utf-8")
 
         results = []
 
-        async def tracked_import():
+        async def tracked_import(i: int):
+            yaml_file = tmp_path / f"lock_test_{i}.yaml"
+            yaml_file.write_text(yaml_content, encoding="utf-8")
             result = await async_engine.import_knowledge_bundle(str(yaml_file))
             results.append(result)
             return result
 
-        tasks = [tracked_import() for _ in range(2)]
+        tasks = [tracked_import(i) for i in range(2)]
         await asyncio.gather(*tasks, return_exceptions=True)
 
         assert len(results) == 2

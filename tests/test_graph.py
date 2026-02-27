@@ -132,7 +132,7 @@ class TestFindPaths:
         rows = async_engine.execute_read("SELECT __id FROM characters")
         if len(rows) >= 2:
             paths = await async_engine.find_paths(
-                "Character", rows[0][0], "Character", rows[1][0], max_depth=2
+                ("Character", rows[0][0]), ("Character", rows[1][0]), max_depth=2
             )
             assert isinstance(paths, list)
             assert len(paths) == 0
@@ -141,7 +141,7 @@ class TestFindPaths:
     async def test_find_paths_invalid_node_type(self, async_engine):
         """测试无效节点类型。"""
         with pytest.raises(ValueError, match="Unknown node type"):
-            await async_engine.find_paths("InvalidType", 1, "Character", 2, max_depth=2)
+            await async_engine.find_paths(("InvalidType", 1), ("Character", 2), max_depth=2)
 
 
 class TestExtractSubgraph:
@@ -291,10 +291,8 @@ class TestGraphEdgeCases:
         rows = async_engine.execute_read("SELECT __id FROM characters")
         if len(rows) >= 2:
             paths = await async_engine.find_paths(
-                "Character",
-                rows[0][0],
-                "Character",
-                rows[1][0],
+                ("Character", rows[0][0]),
+                ("Character", rows[1][0]),
                 max_depth=2,
                 edge_types=["knows"],
             )

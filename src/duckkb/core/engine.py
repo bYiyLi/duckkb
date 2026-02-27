@@ -1,5 +1,6 @@
 """知识库引擎。"""
 
+import asyncio
 from pathlib import Path
 from typing import Self
 
@@ -136,6 +137,7 @@ class Engine(
         """从文件系统加载已有数据。
 
         加载所有节点类型、边类型和搜索缓存。
+        使用并发加载提升启动性能。
         """
         data_dir = self.config.storage.data_dir
 
@@ -143,32 +145,33 @@ class Engine(
             logger.debug(f"Data directory does not exist: {data_dir}")
             return
 
-        loaded_nodes = 0
-        loaded_edges = 0
-
-        for node_type in self.ontology.nodes.keys():
+        async def load_node_safe(node_type: str) -> int:
             try:
-                count = await self.load_node(node_type)
-                if count > 0:
-                    loaded_nodes += count
+                return await self.load_node(node_type)
             except Exception as e:
                 error_msg = str(e)
-                if "No files found" in error_msg:
-                    logger.debug(f"No data files for node type {node_type}")
-                else:
+                if "No files found" not in error_msg:
                     logger.warning(f"Failed to load node type {node_type}: {e}")
+                return 0
 
-        for edge_name in self.ontology.edges.keys():
+        async def load_edge_safe(edge_name: str) -> int:
             try:
-                count = await self.load_edge(edge_name)
-                if count > 0:
-                    loaded_edges += count
+                return await self.load_edge(edge_name)
             except Exception as e:
                 error_msg = str(e)
-                if "No files found" in error_msg:
-                    logger.debug(f"No data files for edge type {edge_name}")
-                else:
+                if "No files found" not in error_msg:
                     logger.warning(f"Failed to load edge type {edge_name}: {e}")
+                return 0
+
+        node_counts = await asyncio.gather(
+            *[load_node_safe(nt) for nt in self.ontology.nodes.keys()]
+        )
+        loaded_nodes = sum(node_counts)
+
+        edge_counts = await asyncio.gather(
+            *[load_edge_safe(en) for en in self.ontology.edges.keys()]
+        )
+        loaded_edges = sum(edge_counts)
 
         cache_path = data_dir / "cache" / "search_cache.parquet"
         if cache_path.exists():
