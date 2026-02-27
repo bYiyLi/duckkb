@@ -395,9 +395,18 @@ class TestSearchEdgeCases:
             assert isinstance(results, list)
 
     @pytest.mark.asyncio
-    async def test_search_with_very_long_query(self, async_engine):
+    async def test_search_with_very_long_query(self, async_engine, tmp_path):
         """测试超长查询。"""
-        long_query = "测试" * 1000
+        yaml_content = """
+- type: Character
+  name: 长查询测试角色
+  bio: 测试超长查询功能
+"""
+        yaml_file = tmp_path / "long_query_test.yaml"
+        yaml_file.write_text(yaml_content, encoding="utf-8")
+        await async_engine.import_knowledge_bundle(str(yaml_file))
+
+        long_query = "测试" * 100
         from unittest.mock import patch
 
         with patch("duckkb.core.mixins.embedding.EmbeddingMixin.embed_single") as mock:

@@ -46,16 +46,19 @@ class GraphMixin(BaseEngine):
                 - "out": 仅出边（从起始节点指向目标节点）
                 - "in": 仅入边（从目标节点指向起始节点）
                 - "both": 双向（默认）
-            limit: 每种边类型返回的最大邻居数。
+            limit: 每种边类型返回的最大邻居数，必须 >= 0。
 
         Returns:
             包含节点信息和邻居列表的字典。
 
         Raises:
-            ValueError: 节点类型不存在。
+            ValueError: 节点类型不存在或 limit 参数为负数。
             NodeNotFoundError: 节点不存在。
             InvalidDirectionError: 方向参数无效。
         """
+        if limit < 0:
+            raise ValueError(f"limit 必须 >= 0，当前值: {limit}")
+
         if direction not in VALID_DIRECTIONS:
             raise InvalidDirectionError(direction)
 
@@ -95,6 +98,9 @@ class GraphMixin(BaseEngine):
             )
             all_neighbors.extend(neighbors)
             stats_by_edge_type[edge_name] = len(neighbors)
+
+        if direction == "both":
+            all_neighbors = self._deduplicate_neighbors(all_neighbors)
 
         return {
             "node": node_data,
@@ -249,6 +255,58 @@ class GraphMixin(BaseEngine):
         self._node_id_cache[cache_key] = resolved_id
         return resolved_id
 
+    def _deduplicate_neighbors(
+        self, neighbors: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """对邻居节点列表进行去重。
+
+        当 direction="both" 时，同一邻居可能通过不同边或方向被多次返回。
+        此方法合并重复的邻居，保留所有边和方向信息。
+
+        Args:
+            neighbors: 原始邻居列表。
+
+        Returns:
+            去重后的邻居列表，每个邻居包含合并后的边和方向信息。
+        """
+        neighbor_map: dict[int, dict[str, Any]] = {}
+
+        for neighbor in neighbors:
+            node = neighbor.get("node", {})
+            neighbor_id = node.get("__id")
+
+            if neighbor_id is None:
+                continue
+
+            if neighbor_id not in neighbor_map:
+                neighbor_map[neighbor_id] = {
+                    "edge_type": neighbor.get("edge_type"),
+                    "directions": [neighbor.get("direction")],
+                    "edges": [neighbor.get("edge", {})],
+                    "node": node,
+                    "node_type": neighbor.get("node_type"),
+                }
+            else:
+                existing = neighbor_map[neighbor_id]
+                existing["directions"].append(neighbor.get("direction"))
+                existing["edges"].append(neighbor.get("edge", {}))
+
+        result = []
+        for neighbor_data in neighbor_map.values():
+            directions = neighbor_data.pop("directions")
+            edges = neighbor_data.pop("edges")
+
+            if len(directions) == 1:
+                neighbor_data["direction"] = directions[0]
+                neighbor_data["edge"] = edges[0]
+            else:
+                neighbor_data["directions"] = directions
+                neighbor_data["edges"] = edges
+
+            result.append(neighbor_data)
+
+        return result
+
     def _get_edges_for_node(
         self,
         node_type: str,
@@ -359,7 +417,7 @@ class GraphMixin(BaseEngine):
             edge_name: 边类型名称。
 
         Returns:
-            邻居节点列表。
+            邻居节点列表，包含完整的边属性。
         """
         if direction == "out":
             join_condition = "e.__to_id = n.__id"
@@ -370,7 +428,7 @@ class GraphMixin(BaseEngine):
 
         sql = f"""
         SELECT 
-            e.__id as edge_id,
+            e.*,
             n.__id as neighbor_id,
             n.* as neighbor_data
         FROM {edge_table} e
@@ -386,22 +444,34 @@ class GraphMixin(BaseEngine):
             if not rows:
                 return []
 
+            edge_columns = self._get_table_columns(edge_table)
+            node_columns = self._get_table_columns(node_table)
+            edge_col_count = len(edge_columns)
+
             neighbors = []
             for row in rows:
-                edge_id = row[0]
-                neighbor_id = row[1]
+                edge_data: dict[str, Any] = {}
+                for i, col_name in enumerate(edge_columns):
+                    if i < len(row):
+                        edge_data[col_name] = row[i]
 
+                neighbor_id = None
                 neighbor_data: dict[str, Any] = {}
-                if len(row) > 2:
+
+                if edge_col_count < len(row):
+                    neighbor_id = row[edge_col_count]
                     neighbor_data["__id"] = neighbor_id
-                    for i in range(2, len(row)):
-                        neighbor_data[f"col_{i}"] = row[i]
+
+                    for i, col_name in enumerate(node_columns):
+                        idx = edge_col_count + 1 + i
+                        if idx < len(row):
+                            neighbor_data[col_name] = row[idx]
 
                 neighbors.append(
                     {
                         "edge_type": edge_name,
                         "direction": direction,
-                        "edge": {"__id": edge_id},
+                        "edge": edge_data,
                         "node": neighbor_data,
                         "node_type": neighbor_node_type,
                     }
@@ -541,8 +611,8 @@ class GraphMixin(BaseEngine):
             node_id: 起始节点 ID 或 identity 字段值。
             edge_types: 允许的边类型列表，None 表示所有边类型。
             direction: 遍历方向，"out" | "in" | "both"。
-            max_depth: 最大遍历深度，默认 3。
-            limit: 返回结果数量限制，默认 1000。
+            max_depth: 最大遍历深度，必须 >= 1，默认 3。
+            limit: 返回结果数量限制，必须 >= 0，默认 1000。
             return_paths: 是否返回完整路径信息，默认 True。
                 - True: 返回每条遍历路径的详细信息
                 - False: 仅返回可达节点列表（去重）
@@ -551,10 +621,15 @@ class GraphMixin(BaseEngine):
             遍历结果列表。
 
         Raises:
-            ValueError: 参数无效时抛出。
+            ValueError: 参数无效时抛出（节点类型不存在、limit 为负数、max_depth 小于 1）。
             NodeNotFoundError: 起始节点不存在。
             InvalidDirectionError: 方向参数无效。
         """
+        if limit < 0:
+            raise ValueError(f"limit 必须 >= 0，当前值: {limit}")
+        if max_depth < 1:
+            raise ValueError(f"max_depth 必须 >= 1，当前值: {max_depth}")
+
         if direction not in VALID_DIRECTIONS:
             raise InvalidDirectionError(direction)
 
@@ -753,17 +828,24 @@ class GraphMixin(BaseEngine):
             node_type: 中心节点类型名称。
             node_id: 中心节点 ID 或 identity 值。
             edge_types: 包含的边类型列表。
-            max_depth: 扩展深度，默认 2。
-            node_limit: 节点数量上限，默认 100。
-            edge_limit: 边数量上限，默认 200。
+            max_depth: 扩展深度，必须 >= 1，默认 2。
+            node_limit: 节点数量上限，必须 >= 0，默认 100。
+            edge_limit: 边数量上限，必须 >= 0，默认 200。
 
         Returns:
             包含中心节点、节点列表、边列表和统计信息的字典。
 
         Raises:
-            ValueError: 参数无效时抛出。
+            ValueError: 参数无效时抛出（节点类型不存在、limit 为负数、max_depth 小于 1）。
             NodeNotFoundError: 中心节点不存在。
         """
+        if node_limit < 0:
+            raise ValueError(f"node_limit 必须 >= 0，当前值: {node_limit}")
+        if edge_limit < 0:
+            raise ValueError(f"edge_limit 必须 >= 0，当前值: {edge_limit}")
+        if max_depth < 1:
+            raise ValueError(f"max_depth 必须 >= 1，当前值: {max_depth}")
+
         node_def = self.ontology.nodes.get(node_type)
         if node_def is None:
             raise ValueError(f"Unknown node type: {node_type}")
@@ -815,12 +897,11 @@ class GraphMixin(BaseEngine):
                         next_level.append((neighbor_type, neighbor_id))
 
                     if edge_id is not None and edge_id not in visited_edges:
-                        visited_edges[edge_id] = {
+                        edge_entry = {
                             "type": neighbor.get("edge_type"),
-                            "__id": edge_id,
-                            "__from_id": current_id,
-                            "__to_id": neighbor_id,
+                            **edge_data,
                         }
+                        visited_edges[edge_id] = edge_entry
 
             current_level = next_level
 
@@ -862,15 +943,20 @@ class GraphMixin(BaseEngine):
             from_node: 起始节点 (类型名称, ID 或 identity 值)。
             to_node: 目标节点 (类型名称, ID 或 identity 值)。
             edge_types: 允许的边类型列表。
-            max_depth: 最大路径长度（边数），默认 5。
-            limit: 返回路径数量限制，默认 10。
+            max_depth: 最大路径长度（边数），必须 >= 1，默认 5。
+            limit: 返回路径数量限制，必须 >= 0，默认 10。
 
         Returns:
             路径列表。
 
         Raises:
-            ValueError: 节点不存在或参数无效。
+            ValueError: 节点不存在、limit 为负数或 max_depth 小于 1。
         """
+        if limit < 0:
+            raise ValueError(f"limit 必须 >= 0，当前值: {limit}")
+        if max_depth < 1:
+            raise ValueError(f"max_depth 必须 >= 1，当前值: {max_depth}")
+
         from_type, from_id = from_node
         to_type, to_id = to_node
 

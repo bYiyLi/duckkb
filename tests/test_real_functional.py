@@ -558,6 +558,64 @@ class TestSearch:
 class TestGraph:
     """图谱功能测试。"""
 
+    @pytest.fixture(autouse=True)
+    async def setup_graph_data(self, real_async_engine, tmp_path):
+        """在每个测试前导入图谱测试数据。"""
+        yaml_content = """
+- type: Character
+  name: 张明
+  age: 28
+  bio: 张明是一名资深软件工程师，专注于向量数据库和知识图谱技术。
+- type: Character
+  name: 李婷
+  age: 32
+  bio: 李婷是产品经理，负责知识库产品规划。
+- type: Character
+  name: 王强
+  age: 35
+  bio: 王强是架构师，负责系统架构设计。
+- type: Character
+  name: 张三
+  age: 25
+  bio: 张三是新入职的开发工程师。
+- type: Document
+  doc_id: DOC-001
+  title: 技术架构设计文档
+  content: DuckKB 是一个基于 DuckDB 构建的知识库引擎。
+- type: Product
+  sku: SKU-001
+  name: DuckKB 企业版
+  description: 面向企业用户的知识库解决方案。
+  price: 99999.00
+  stock: 100
+  active: true
+- type: knows
+  source:
+    name: 张明
+  target:
+    name: 李婷
+  since: "2023-06-01"
+- type: knows
+  source:
+    name: 李婷
+  target:
+    name: 王强
+  since: "2023-08-15"
+- type: authored
+  source:
+    name: 张明
+  target:
+    doc_id: DOC-001
+- type: mentions
+  source:
+    doc_id: DOC-001
+  target:
+    sku: SKU-001
+"""
+        yaml_file = tmp_path / "graph_setup.yaml"
+        yaml_file.write_text(yaml_content, encoding="utf-8")
+        await real_async_engine.import_knowledge_bundle(str(yaml_file))
+
     @pytest.mark.asyncio
     async def test_get_neighbors_out(self, real_async_engine):
         """G-01: 出边邻居。"""

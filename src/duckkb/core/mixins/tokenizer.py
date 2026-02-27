@@ -102,3 +102,23 @@ class TokenizerMixin(BaseEngine):
             return [" ".join(jieba.cut_for_search(t)) for t in texts]
 
         return await asyncio.to_thread(_do_segment_batch)
+
+    def _segment_sync(self, text: str) -> str:
+        """同步分词处理。
+
+        用于事务内的同步索引构建场景。
+
+        Args:
+            text: 待分词文本。
+
+        Returns:
+            空格分隔的分词结果字符串。
+        """
+        if not text:
+            return ""
+
+        self.init_tokenizer()
+
+        import jieba
+
+        return " ".join(jieba.cut_for_search(text))

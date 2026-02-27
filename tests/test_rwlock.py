@@ -132,6 +132,7 @@ class TestFairReadWriteLockFairness:
         events = {
             "reader1_started": threading.Event(),
             "writer_queued": threading.Event(),
+            "writer_waiting": threading.Event(),
             "reader2_started": threading.Event(),
             "writer_completed": threading.Event(),
         }
@@ -139,8 +140,8 @@ class TestFairReadWriteLockFairness:
         def reader1_task() -> None:
             with lock.read_lock():
                 events["reader1_started"].set()
-                events["writer_queued"].wait()
-                time.sleep(0.05)
+                events["writer_waiting"].wait()
+                time.sleep(0.2)
 
         def writer_task() -> None:
             events["writer_queued"].set()
@@ -149,6 +150,9 @@ class TestFairReadWriteLockFairness:
 
         def reader2_task() -> None:
             events["writer_queued"].wait()
+            time.sleep(0.05)
+            events["writer_waiting"].set()
+            time.sleep(0.05)
             with lock.read_lock():
                 events["reader2_started"].set()
 
@@ -161,10 +165,9 @@ class TestFairReadWriteLockFairness:
 
         t2.start()
         events["writer_queued"].wait()
-        time.sleep(0.02)
 
         t3.start()
-        time.sleep(0.02)
+        time.sleep(0.1)
 
         assert not events["reader2_started"].is_set(), "reader2 应该等待 writer 完成"
 
@@ -313,7 +316,7 @@ class TestFairReadWriteLockConcurrency:
         def write_task(value: int) -> None:
             with lock.write_lock():
                 data[0] = value
-                time.sleep(0.01)
+                time.sleep(0.02)
 
         def read_task() -> int:
             with lock.read_lock():
@@ -324,12 +327,14 @@ class TestFairReadWriteLockConcurrency:
             for f in write_futures:
                 f.result()
 
+            time.sleep(0.05)
+
             read_futures = [executor.submit(read_task) for _ in range(5)]
             for f in read_futures:
                 results.append(f.result())
 
         assert len(results) == 5
-        assert all(r == 2 for r in results), "所有读操作应该读到最后的写入值"
+        assert all(r == 2 for r in results), f"所有读操作应该读到最后的写入值，实际结果: {results}"
 
 
 class TestFairReadWriteLockEdgeCases:

@@ -57,12 +57,18 @@ class SearchMixin(BaseEngine):
         Args:
             query: 搜索查询文本。
             node_type: 节点类型过滤器（可选）。
-            limit: 返回结果数量。
+            limit: 返回结果数量，必须 >= 0。
             alpha: 向量搜索权重 (0.0-1.0)。
 
         Returns:
             排序后的结果列表，包含原始字段和分数。
+
+        Raises:
+            ValueError: limit 参数为负数时抛出。
         """
+        if limit < 0:
+            raise ValueError(f"limit 必须 >= 0，当前值: {limit}")
+
         if not query:
             return []
 
@@ -172,7 +178,13 @@ class SearchMixin(BaseEngine):
                 FULL OUTER JOIN fts_search f 
                   ON v.id = f.id
             )
-            SELECT r.*, i.content
+            SELECT 
+                r.source_table,
+                r.source_id,
+                r.source_field,
+                r.chunk_seq,
+                i.content,
+                r.rrf_score as score
             FROM rrf_scores r
             JOIN {SEARCH_INDEX_TABLE} i 
               ON r.id = i.id
@@ -201,11 +213,17 @@ class SearchMixin(BaseEngine):
         Args:
             query: 搜索查询文本。
             node_type: 节点类型过滤器。
-            limit: 返回结果数量。
+            limit: 返回结果数量，必须 >= 0。
 
         Returns:
             排序后的结果列表。
+
+        Raises:
+            ValueError: limit 参数为负数时抛出。
         """
+        if limit < 0:
+            raise ValueError(f"limit 必须 >= 0，当前值: {limit}")
+
         query_vector = await self._get_query_vector(query)
         if not query_vector:
             return []
@@ -251,14 +269,18 @@ class SearchMixin(BaseEngine):
         Args:
             query: 搜索查询文本。
             node_type: 节点类型过滤器。
-            limit: 返回结果数量。
+            limit: 返回结果数量，必须 >= 0。
 
         Returns:
             排序后的结果列表。
 
         Raises:
+            ValueError: limit 参数为负数时抛出。
             DatabaseError: FTS 搜索失败时抛出。
         """
+        if limit < 0:
+            raise ValueError(f"limit 必须 >= 0，当前值: {limit}")
+
         if not query:
             return []
 
@@ -335,15 +357,45 @@ class SearchMixin(BaseEngine):
             查询结果字典列表。
 
         Raises:
-            ValueError: 结果集大小超限。
+            ValueError: SQL 语句类型不允许或结果集大小超限。
             duckdb.Error: SQL 执行失败或包含写操作。
         """
         sql_stripped = sql.strip()
+        self._validate_sql_type(sql_stripped)
 
         if not re.search(r"\bLIMIT\s+\d+", sql_stripped.upper()):
             sql = sql_stripped + f" LIMIT {QUERY_DEFAULT_LIMIT}"
 
         return await asyncio.to_thread(self._execute_raw_sql_readonly, sql)
+
+    def _validate_sql_type(self, sql: str) -> None:
+        """验证 SQL 语句类型，仅允许 SELECT 查询。
+
+        Args:
+            sql: SQL 查询字符串。
+
+        Raises:
+            ValueError: 当 SQL 不是 SELECT 语句时抛出。
+        """
+        forbidden_keywords = [
+            "INSERT",
+            "UPDATE",
+            "DELETE",
+            "DROP",
+            "ALTER",
+            "CREATE",
+            "TRUNCATE",
+            "GRANT",
+            "REVOKE",
+            "EXEC",
+            "EXECUTE",
+            "CALL",
+        ]
+
+        sql_upper = sql.upper()
+        for keyword in forbidden_keywords:
+            if re.search(rf"\b{keyword}\b", sql_upper):
+                raise ValueError(f"仅允许 SELECT 查询，检测到禁止的关键字: {keyword}")
 
     def _execute_raw_sql_readonly(self, sql: str) -> list[dict[str, Any]]:
         """在只读模式下执行 SQL 查询。

@@ -196,13 +196,22 @@ class TestGraphSearch:
     """图谱搜索测试。"""
 
     @pytest.mark.asyncio
-    async def test_graph_search_with_empty_results(self, async_engine):
+    async def test_graph_search_with_empty_results(self, async_engine, tmp_path):
         """测试空结果的图谱搜索。"""
+        yaml_content = """
+- type: Character
+  name: 空结果测试角色
+  bio: 测试空结果的图谱搜索
+"""
+        yaml_file = tmp_path / "empty_graph_search.yaml"
+        yaml_file.write_text(yaml_content, encoding="utf-8")
+        await async_engine.import_knowledge_bundle(str(yaml_file))
+
         from unittest.mock import patch
 
         with patch("duckkb.core.mixins.embedding.EmbeddingMixin.embed_single") as mock:
             mock.return_value = [0.1] * 1536
-            result = await async_engine.graph_search("不存在的实体", traverse_depth=1)
+            result = await async_engine.graph_search("不存在的实体xyz123", traverse_depth=1)
             assert isinstance(result, list)
 
     @pytest.mark.asyncio
@@ -246,9 +255,8 @@ class TestGraphEdgeCases:
             "SELECT __id FROM characters WHERE name = ?", ["零深度测试角色"]
         )
         if rows:
-            result = await async_engine.traverse("Character", rows[0][0], max_depth=0)
-            assert isinstance(result, list)
-            assert len(result) == 0
+            with pytest.raises(ValueError, match="max_depth 必须 >= 1"):
+                await async_engine.traverse("Character", rows[0][0], max_depth=0)
 
     @pytest.mark.asyncio
     async def test_get_neighbors_with_edge_type_filter(self, async_engine, tmp_path):

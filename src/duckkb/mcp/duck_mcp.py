@@ -327,7 +327,7 @@ class DuckMCP(Engine, FastMCP):
                 source_table=source_table,
                 source_id=source_id,
             )
-            return json.dumps(result, ensure_ascii=False, indent=2)
+            return json.dumps(result, ensure_ascii=False, indent=2, default=str)
 
     def _register_get_neighbors_tool(self) -> None:
         """注册 get_neighbors 工具。"""
