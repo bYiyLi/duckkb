@@ -22,22 +22,128 @@ class SearchMixin(BaseEngine):
     使用 search_index 表作为唯一检索入口。
 
     Attributes:
-        rrf_k: RRF 平滑常数。
+        rrf_k: RRF 平滑常数（从配置文件读取）。
+        _auto_k: 是否启用自适应 k 值。
+        _min_k: k 值下限。
+        _max_k: k 值上限。
+        _thresholds: 自适应阈值配置。
+        _strategy: 自适应策略。
     """
 
-    def __init__(self, *args, rrf_k: int = 60, **kwargs) -> None:
+    def __init__(self, *args, **kwargs) -> None:
         """初始化检索 Mixin。
 
-        Args:
-            rrf_k: RRF 常数，默认 60。
+        从配置文件加载 RRF 相关参数：
+        - auto_k: 是否启用自适应 k 值
+        - k: 固定 k 值（auto_k=false 时使用）
+        - min_k, max_k: k 值范围限制
+        - strategy: 自适应策略
+        - thresholds: 自适应阈值配置
         """
         super().__init__(*args, **kwargs)
-        self._rrf_k = rrf_k
+
+        # 从配置加载所有 RRF 参数
+        search_config = getattr(self, "config", None)
+        if search_config and hasattr(search_config, "search"):
+            rrf_config = search_config.search.rrf
+            self._auto_k = rrf_config.auto_k
+            self._min_k = rrf_config.min_k
+            self._max_k = rrf_config.max_k
+            self._thresholds = rrf_config.thresholds
+            self._strategy = rrf_config.strategy
+            self._config_k = rrf_config.k if not self._auto_k else None
+        else:
+            # 默认值（向后兼容）
+            self._auto_k = True
+            self._min_k = 5
+            self._max_k = 60
+            self._thresholds = []
+            self._strategy = "document_count"
+            self._config_k = None
+
+        self._cached_k = None
+
+        logger.info(
+            f"SearchMixin initialized: auto_k={self._auto_k}, "
+            f"k_range=[{self._min_k}, {self._max_k}], "
+            f"strategy={self._strategy}"
+        )
 
     @property
     def rrf_k(self) -> int:
-        """RRF 平滑常数。"""
-        return self._rrf_k
+        """RRF 平滑常数（可能是自适应计算的）。"""
+        if self._cached_k is not None:
+            return self._cached_k
+
+        # 如果启用自适应，在异步上下文中计算
+        if self._auto_k and self._strategy == "document_count":
+            # 注意：这里不能直接调用异步方法，需要在异步上下文中使用
+            # 默认返回一个合理的值，实际使用时会通过异步方法计算
+            if self._thresholds:
+                # 使用第一个阈值的 k 值作为默认值
+                self._cached_k = self._thresholds[0].k
+            else:
+                self._cached_k = 10
+        else:
+            # 使用配置文件的固定值或默认值
+            if self._config_k is not None:
+                self._cached_k = self._config_k
+            else:
+                self._cached_k = 10
+
+        return self._cached_k
+
+    async def _calculate_optimal_k(self) -> int:
+        """根据数据量和阈值配置计算最优 k 值。"""
+        total_docs = await self._get_total_documents()
+
+        # 使用配置的阈值
+        if self._thresholds:
+            for threshold in self._thresholds:
+                if threshold.max_docs is None or total_docs <= threshold.max_docs:
+                    k = threshold.k
+                    break
+            else:
+                # 超出所有阈值，使用最大的 k
+                k = self._thresholds[-1].k
+        else:
+            # 默认阈值（向后兼容）
+            if total_docs < 10_000:
+                k = 10
+            elif total_docs < 100_000:
+                k = 20
+            elif total_docs < 1_000_000:
+                k = 40
+            else:
+                k = 60
+
+        # 应用范围限制
+        k = max(self._min_k, min(self._max_k, k))
+
+        logger.debug(f"Auto-calculated k={k} for {total_docs} documents")
+        return k
+
+    async def _get_total_documents(self) -> int:
+        """获取搜索索引中的文档总数。"""
+
+        def _count() -> int:
+            rows = self.execute_read(
+                f"SELECT COUNT(DISTINCT source_table, source_id) FROM {SEARCH_INDEX_TABLE}"
+            )
+            return rows[0][0] if rows else 0
+
+        return await asyncio.to_thread(_count)
+
+    async def refresh_k(self) -> int:
+        """强制刷新 k 值。
+
+        清除缓存的 k 值，下次搜索时重新计算。
+
+        Returns:
+            新计算的 k 值。
+        """
+        self._cached_k = None
+        return self.rrf_k
 
     async def search(
         self,
@@ -116,6 +222,12 @@ class SearchMixin(BaseEngine):
         alpha: float,
     ) -> list[dict[str, Any]]:
         """执行混合检索。"""
+        # 在执行搜索前，确保 k 值已被计算（如果是自适应模式）
+        if self._auto_k and self._strategy == "document_count":
+            # 重新计算 k 值，覆盖可能的同步访问结果
+            optimal_k = await self._calculate_optimal_k()
+            self._cached_k = optimal_k
+
         table_filter = ""
         params: list[Any] = []
 
@@ -172,8 +284,10 @@ class SearchMixin(BaseEngine):
                     COALESCE(v.source_id, f.source_id) as source_id,
                     COALESCE(v.source_field, f.source_field) as source_field,
                     COALESCE(v.chunk_seq, f.chunk_seq) as chunk_seq,
-                    COALESCE(1.0 / ({self._rrf_k} + v.rnk), 0.0) * {alpha} 
-                    + COALESCE(1.0 / ({self._rrf_k} + f.rnk), 0.0) * {1 - alpha} as rrf_score
+                    (
+                        COALESCE(1.0 / ({self.rrf_k} + v.rnk), 0.0) * {alpha} 
+                        + COALESCE(1.0 / ({self.rrf_k} + f.rnk), 0.0) * {1 - alpha}
+                    ) * ({self.rrf_k} + 1) as rrf_score
                 FROM vector_search v
                 FULL OUTER JOIN fts_search f 
                   ON v.id = f.id
@@ -467,13 +581,22 @@ class SearchMixin(BaseEngine):
         columns = ["source_table", "source_id", "source_field", "chunk_seq", "content", "score"]
 
         results = []
-        for row in rows:
+        for i, row in enumerate(rows):
             row_dict = {}
-            for i, value in enumerate(row):
-                if i < len(columns):
-                    row_dict[columns[i]] = value
+            for j, value in enumerate(row):
+                if j < len(columns):
+                    row_dict[columns[j]] = value
                 else:
-                    row_dict[f"col_{i}"] = value
+                    row_dict[f"col_{j}"] = value
+
+            # 增加元数据
+            row_dict["_meta"] = {
+                "rank": i + 1,
+                "rrf_k": self.rrf_k,
+                "auto_k": self._auto_k,
+                "strategy": self._strategy,
+            }
+
             results.append(row_dict)
 
         return results

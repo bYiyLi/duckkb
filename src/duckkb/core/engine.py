@@ -80,21 +80,19 @@ class Engine(
         kb_path: Path | str,
         *,
         config_path: Path | str | None = None,
-        rrf_k: int = 60,
     ) -> None:
         """初始化知识库引擎。
 
         全局配置（chunk_size, embedding_model, tokenizer）从 config.yaml 读取。
+        RRF 相关配置从 config.yaml 的 search.rrf 节读取。
 
         Args:
             kb_path: 知识库根目录路径。
             config_path: 配置文件路径，默认为 kb_path/config.yaml。
-            rrf_k: RRF 常数，默认 60。
         """
         super().__init__(
             kb_path=kb_path,
             config_path=config_path,
-            rrf_k=rrf_k,
         )
 
     def _get_global_config(self) -> GlobalConfig:

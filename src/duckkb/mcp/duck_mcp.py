@@ -12,6 +12,21 @@ from duckkb.core.engine import Engine
 from duckkb.logger import logger
 
 
+def _parse_edge_types(edge_types: str | None) -> list[str] | None:
+    """解析 edge_types 参数字符串为列表。
+
+    Args:
+        edge_types: 逗号分隔的边类型字符串，如 "knows,authored"，或 None。
+
+    Returns:
+        解析后的列表，如 ["knows", "authored"]；空字符串或 None 返回 None。
+    """
+    if not edge_types:
+        return None
+    result = [t.strip() for t in edge_types.split(",") if t.strip()]
+    return result if result else None
+
+
 @lifespan
 async def engine_lifespan(server: FastMCP[Any]) -> AsyncIterator[dict[str, Any]]:
     """Engine 生命周期管理。
@@ -79,7 +94,6 @@ class DuckMCP(Engine, FastMCP):
         name: str = "DuckKB",
         instructions: str | None = None,
         config_path: Path | str | None = None,
-        rrf_k: int = 60,
         **kwargs,
     ) -> None:
         """初始化 DuckMCP。
@@ -91,14 +105,12 @@ class DuckMCP(Engine, FastMCP):
             name: MCP 服务名称，默认 "DuckKB"。
             instructions: MCP 服务说明。
             config_path: 配置文件路径，默认为 kb_path/config.yaml。
-            rrf_k: RRF 常数，默认 60。
             **kwargs: 传递给 FastMCP 的其他参数。
         """
         Engine.__init__(
             self,
             kb_path=kb_path,
             config_path=config_path,
-            rrf_k=rrf_k,
         )
         FastMCP.__init__(
             self,
@@ -336,7 +348,7 @@ class DuckMCP(Engine, FastMCP):
         async def get_neighbors(
             node_type: str,
             node_id: int | str,
-            edge_types: list[str] | None = None,
+            edge_types: str | None = None,
             direction: str = "both",
             limit: int = 100,
         ) -> str:
@@ -347,17 +359,21 @@ class DuckMCP(Engine, FastMCP):
             Args:
                 node_type: 节点类型名称（如 "Character"）。
                 node_id: 节点 ID 或 identity 字段值。
-                edge_types: 边类型过滤列表，如 ["friend_of", "located_at"]。
+                edge_types: 逗号分隔的边类型字符串，如 "knows,authored"。多个边类型用逗号分隔，不传或空字符串表示不过滤。
                 direction: 遍历方向，"out"（出边）、"in"（入边）、"both"（双向）。
                 limit: 每种边类型返回的最大邻居数。
 
             Returns:
                 JSON 格式的邻居信息，包含节点详情和边属性。
+
+            Example:
+                单个边类型：edge_types="knows"
+                多个边类型：edge_types="knows,authored,mentions"
             """
             result = await self.get_neighbors(
                 node_type=node_type,
                 node_id=node_id,
-                edge_types=edge_types,
+                edge_types=_parse_edge_types(edge_types),
                 direction=direction,
                 limit=limit,
             )
@@ -370,7 +386,7 @@ class DuckMCP(Engine, FastMCP):
         async def graph_search(
             query: str,
             node_type: str | None = None,
-            edge_types: list[str] | None = None,
+            edge_types: str | None = None,
             direction: str = "both",
             traverse_depth: int = 1,
             search_limit: int = 5,
@@ -385,7 +401,7 @@ class DuckMCP(Engine, FastMCP):
             Args:
                 query: 查询文本。
                 node_type: 种子节点类型过滤（可选）。
-                edge_types: 遍历边类型过滤（可选）。
+                edge_types: 逗号分隔的边类型字符串，如 "knows,authored"。多个边类型用逗号分隔，不传或空字符串表示不过滤。
                 direction: 图遍历方向，"out"、"in"、"both"。
                 traverse_depth: 图遍历深度，默认 1。
                 search_limit: 向量检索返回的种子节点数，默认 5。
@@ -394,11 +410,15 @@ class DuckMCP(Engine, FastMCP):
 
             Returns:
                 JSON 格式的结果列表，包含种子节点和上下文信息。
+
+            Example:
+                单个边类型：edge_types="knows"
+                多个边类型：edge_types="knows,authored,mentions"
             """
             result = await self.graph_search(
                 query=query,
                 node_type=node_type,
-                edge_types=edge_types,
+                edge_types=_parse_edge_types(edge_types),
                 direction=direction,
                 traverse_depth=traverse_depth,
                 search_limit=search_limit,
@@ -414,7 +434,7 @@ class DuckMCP(Engine, FastMCP):
         async def traverse(
             node_type: str,
             node_id: int | str,
-            edge_types: list[str] | None = None,
+            edge_types: str | None = None,
             direction: str = "out",
             max_depth: int = 3,
             limit: int = 1000,
@@ -427,7 +447,7 @@ class DuckMCP(Engine, FastMCP):
             Args:
                 node_type: 起始节点类型名称。
                 node_id: 起始节点 ID 或 identity 字段值。
-                edge_types: 允许的边类型列表（可选）。
+                edge_types: 逗号分隔的边类型字符串，如 "knows,authored"。多个边类型用逗号分隔，不传或空字符串表示不过滤。
                 direction: 遍历方向，"out"、"in"、"both"。
                 max_depth: 最大遍历深度，默认 3。
                 limit: 返回结果数量限制，默认 1000。
@@ -435,11 +455,15 @@ class DuckMCP(Engine, FastMCP):
 
             Returns:
                 JSON 格式的遍历结果列表。
+
+            Example:
+                单个边类型：edge_types="knows"
+                多个边类型：edge_types="knows,authored,mentions"
             """
             result = await self.traverse(
                 node_type=node_type,
                 node_id=node_id,
-                edge_types=edge_types,
+                edge_types=_parse_edge_types(edge_types),
                 direction=direction,
                 max_depth=max_depth,
                 limit=limit,
@@ -454,7 +478,7 @@ class DuckMCP(Engine, FastMCP):
         async def extract_subgraph(
             node_type: str,
             node_id: int | str,
-            edge_types: list[str] | None = None,
+            edge_types: str | None = None,
             max_depth: int = 2,
             node_limit: int = 100,
             edge_limit: int = 200,
@@ -466,18 +490,22 @@ class DuckMCP(Engine, FastMCP):
             Args:
                 node_type: 中心节点类型名称。
                 node_id: 中心节点 ID 或 identity 值。
-                edge_types: 包含的边类型列表（可选）。
+                edge_types: 逗号分隔的边类型字符串，如 "knows,authored"。多个边类型用逗号分隔，不传或空字符串表示不过滤。
                 max_depth: 扩展深度，默认 2。
                 node_limit: 节点数量上限，默认 100。
                 edge_limit: 边数量上限，默认 200。
 
             Returns:
                 JSON 格式的子图信息，包含中心节点、节点列表、边列表和统计信息。
+
+            Example:
+                单个边类型：edge_types="knows"
+                多个边类型：edge_types="knows,authored,mentions"
             """
             result = await self.extract_subgraph(
                 node_type=node_type,
                 node_id=node_id,
-                edge_types=edge_types,
+                edge_types=_parse_edge_types(edge_types),
                 max_depth=max_depth,
                 node_limit=node_limit,
                 edge_limit=edge_limit,
@@ -493,7 +521,7 @@ class DuckMCP(Engine, FastMCP):
             from_node_id: int | str,
             to_node_type: str,
             to_node_id: int | str,
-            edge_types: list[str] | None = None,
+            edge_types: str | None = None,
             max_depth: int = 5,
             limit: int = 10,
         ) -> str:
@@ -506,17 +534,21 @@ class DuckMCP(Engine, FastMCP):
                 from_node_id: 起始节点 ID 或 identity 值。
                 to_node_type: 目标节点类型名称。
                 to_node_id: 目标节点 ID 或 identity 值。
-                edge_types: 允许的边类型列表（可选）。
+                edge_types: 逗号分隔的边类型字符串，如 "knows,authored"。多个边类型用逗号分隔，不传或空字符串表示不过滤。
                 max_depth: 最大路径长度（边数），默认 5。
                 limit: 返回路径数量限制，默认 10。
 
             Returns:
                 JSON 格式的路径列表，按路径长度排序。
+
+            Example:
+                单个边类型：edge_types="knows"
+                多个边类型：edge_types="knows,authored,mentions"
             """
             result = await self.find_paths(
                 from_node=(from_node_type, from_node_id),
                 to_node=(to_node_type, to_node_id),
-                edge_types=edge_types,
+                edge_types=_parse_edge_types(edge_types),
                 max_depth=max_depth,
                 limit=limit,
             )

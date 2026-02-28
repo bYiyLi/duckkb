@@ -128,6 +128,23 @@ ontology:
           relevance:
             type: number
 
+search:
+  rrf:
+    auto_k: true
+    k: 10
+    min_k: 5
+    max_k: 60
+    strategy: document_count
+    thresholds:
+      - max_docs: 10000
+        k: 10
+      - max_docs: 100000
+        k: 20
+      - max_docs: 1000000
+        k: 40
+      - max_docs: null
+        k: 60
+
 usage_instructions: |
   这是一个测试知识库，用于验证 DuckKB 的所有核心功能。
 

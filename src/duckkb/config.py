@@ -27,6 +27,72 @@ from duckkb.constants import (
 from duckkb.core.models.ontology import Ontology
 
 
+class RRFThresholdConfig(BaseModel):
+    """RRF 阈值配置。
+
+    Attributes:
+        max_docs: 最大文档数（null 表示无穷大）。
+        k: RRF k 值。
+    """
+
+    max_docs: int | None = None
+    k: int = 10
+
+
+class RRFConfig(BaseModel):
+    """RRF 配置模型。
+
+    Attributes:
+        auto_k: 是否启用自适应 k 值，默认 true。
+        k: 手动指定的 k 值，默认 10。
+        min_k: k 值下限，默认 5。
+        max_k: k 值上限，默认 60。
+        strategy: 自适应策略，默认 "document_count"。
+        thresholds: 自适应阈值配置列表。
+    """
+
+    auto_k: bool = True
+    k: int = 10
+    min_k: int = 5
+    max_k: int = 60
+    strategy: str = "document_count"
+    thresholds: list[RRFThresholdConfig] = Field(
+        default_factory=lambda: [
+            RRFThresholdConfig(max_docs=10_000, k=10),
+            RRFThresholdConfig(max_docs=100_000, k=20),
+            RRFThresholdConfig(max_docs=1_000_000, k=40),
+            RRFThresholdConfig(max_docs=None, k=60),
+        ]
+    )
+
+    @field_validator("k", "min_k", "max_k")
+    @classmethod
+    def validate_k(cls, v: int) -> int:
+        """验证 k 值必须为正整数。"""
+        if v <= 0:
+            raise ValueError("k must be positive")
+        return v
+
+    @field_validator("strategy")
+    @classmethod
+    def validate_strategy(cls, v: str) -> str:
+        """验证策略名称。"""
+        valid_strategies = ["document_count", "fixed"]
+        if v not in valid_strategies:
+            raise ValueError(f"strategy must be one of: {valid_strategies}")
+        return v
+
+
+class SearchConfig(BaseModel):
+    """搜索配置模型。
+
+    Attributes:
+        rrf: RRF 配置。
+    """
+
+    rrf: RRFConfig = Field(default_factory=RRFConfig)
+
+
 class GlobalConfig(BaseModel):
     """全局配置模型。
 
@@ -98,7 +164,7 @@ class EmbeddingConfig(BaseModel):
 class KBConfig(BaseModel):
     """知识库配置模型。
 
-    存储单个知识库的配置项，包括嵌入模型、日志设置和本体定义。
+    存储单个知识库的配置项，包括嵌入模型、日志设置、本体定义和搜索配置。
 
     Attributes:
         embedding: 嵌入模型配置。
@@ -106,6 +172,7 @@ class KBConfig(BaseModel):
         tokenizer: 分词器类型，默认 jieba。
         log_level: 日志级别，默认为 INFO。
         ontology: 本体定义。
+        search: 搜索配置。
     """
 
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
@@ -114,6 +181,7 @@ class KBConfig(BaseModel):
     log_level: str = DEFAULT_LOG_LEVEL
     ontology: Ontology = Field(default_factory=Ontology)
     usage_instructions: str | None = None
+    search: SearchConfig = Field(default_factory=SearchConfig)
 
     @field_validator("log_level")
     @classmethod
@@ -148,8 +216,11 @@ class KBConfig(BaseModel):
         if config_path.exists():
             with open(config_path, encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
+
             embedding_config = data.get("embedding", {})
             ontology_config = data.get("ontology", {})
+            search_config_data = data.get("search", {})
+
             return cls(
                 embedding=EmbeddingConfig(
                     model=embedding_config.get("model", DEFAULT_EMBEDDING_MODEL),
@@ -162,6 +233,7 @@ class KBConfig(BaseModel):
                 log_level=data.get("log_level", DEFAULT_LOG_LEVEL),
                 ontology=Ontology(**ontology_config) if ontology_config else Ontology(),
                 usage_instructions=data.get("usage_instructions"),
+                search=SearchConfig(**search_config_data) if search_config_data else SearchConfig(),
             )
         return cls()
 
