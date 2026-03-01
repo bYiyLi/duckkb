@@ -128,7 +128,7 @@ class SearchMixin(BaseEngine):
 
         def _count() -> int:
             rows = self.execute_read(
-                f"SELECT COUNT(DISTINCT source_table, source_id) FROM {SEARCH_INDEX_TABLE}"
+                f"SELECT COUNT(DISTINCT (source_table, source_id)) FROM {SEARCH_INDEX_TABLE}"
             )
             return rows[0][0] if rows else 0
 
